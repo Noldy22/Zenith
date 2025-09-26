@@ -1,10 +1,9 @@
 "use client";
 
 import { TradingChart } from "@/components/TradingChart";
-import { fetchChartDataFMP, CandlestickData } from "@/lib/fmpApi"; // <-- Import from our new file
+import { fetchChartDataFMP, CandlestickData } from "@/lib/fmpApi";
 import { useEffect, useState } from "react";
 
-// Updated timeframes for the FMP API
 const timeframes = {
   '1H': '1hour',
   '4H': '4hour',
@@ -14,8 +13,11 @@ const timeframes = {
 export default function ChartsPage() {
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [symbol, setSymbol] = useState('EURUSD'); // Simpler state for the symbol
+  const [symbol, setSymbol] = useState('EURUSD');
   const [activeTimeframe, setActiveTimeframe] = useState('Daily');
+
+  // DEBUGGING LINE: Let's print the key to the console to see what the app is using.
+  console.log("API Key being used:", process.env.NEXT_PUBLIC_FMP_API_KEY);
 
   useEffect(() => {
     setIsLoading(true);
@@ -26,7 +28,7 @@ export default function ChartsPage() {
       setIsLoading(false);
     });
 
-  }, [symbol, activeTimeframe]); // Re-fetch when symbol or timeframe changes
+  }, [symbol, activeTimeframe]);
 
   return (
     <main className="p-4">
