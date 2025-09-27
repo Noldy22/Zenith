@@ -8,6 +8,14 @@ export interface CandlestickData {
   close: number;
 }
 
+// Defines the structure of the raw data from the Alpha Vantage API
+interface ApiOhlcData {
+  '1. open': string;
+  '2. high': string;
+  '3. low': string;
+  '4. close': string;
+}
+
 export async function fetchForexDailyData(fromSymbol: string, toSymbol: string): Promise<CandlestickData[]> {
   const apiKey = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY;
   const url = `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${fromSymbol}&to_symbol=${toSymbol}&outputsize=full&apikey=${apiKey}`;
@@ -19,7 +27,8 @@ export async function fetchForexDailyData(fromSymbol: string, toSymbol: string):
       console.error("API Error (Forex Daily):", data['Note'] || 'No time series data found.');
       return [];
     }
-    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, any]) => ({
+    // Use our new ApiOhlcData interface instead of 'any'
+    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
       time: new Date(date).getTime() / 1000,
       open: parseFloat(values['1. open']),
       high: parseFloat(values['2. high']),
@@ -46,7 +55,8 @@ export async function fetchForexIntradayData(fromSymbol: string, toSymbol: strin
       console.error("API Error (Forex Intraday):", data['Note'] || `No data for key ${timeSeriesKey}`);
       return [];
     }
-    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, any]) => ({
+    // Use our new ApiOhlcData interface instead of 'any'
+    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
       time: new Date(date.replace(" ", "T") + "Z").getTime() / 1000,
       open: parseFloat(values['1. open']),
       high: parseFloat(values['2. high']),

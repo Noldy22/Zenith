@@ -1,14 +1,15 @@
-"use client"; // This component uses client-side features
+"use client";
 
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
 import React, { useEffect, useRef } from 'react';
+import { CandlestickData } from '@/lib/alphaVantage'; // <-- Import our data type
 
-export const TradingChart = (props: { data: any[] }) => {
+export const TradingChart = (props: { data: CandlestickData[] }) => { // <-- Use CandlestickData[] instead of any[]
     const { data } = props;
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (!chartContainerRef.current) return;
+        if (!chartContainerRef.current || data.length === 0) return;
 
         const handleResize = () => {
             chart.applyOptions({ width: chartContainerRef.current!.clientWidth });
