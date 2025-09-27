@@ -1,14 +1,13 @@
 // src/lib/alphaVantage.ts
 
 export interface CandlestickData {
-  time: number;
+  time: number | string; // Allow time to be a number (for intraday) or a string (for daily)
   open: number;
   high: number;
   low: number;
   close: number;
 }
 
-// Defines the structure of the raw data from the Alpha Vantage API
 interface ApiOhlcData {
   '1. open': string;
   '2. high': string;
@@ -27,9 +26,8 @@ export async function fetchForexDailyData(fromSymbol: string, toSymbol: string):
       console.error("API Error (Forex Daily):", data['Note'] || 'No time series data found.');
       return [];
     }
-    // Use our new ApiOhlcData interface instead of 'any'
     const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
-      time: new Date(date).getTime() / 1000,
+      time: date, // <-- THIS IS THE FIX: Pass the date string directly
       open: parseFloat(values['1. open']),
       high: parseFloat(values['2. high']),
       low: parseFloat(values['3. low']),
@@ -55,7 +53,6 @@ export async function fetchForexIntradayData(fromSymbol: string, toSymbol: strin
       console.error("API Error (Forex Intraday):", data['Note'] || `No data for key ${timeSeriesKey}`);
       return [];
     }
-    // Use our new ApiOhlcData interface instead of 'any'
     const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
       time: new Date(date.replace(" ", "T") + "Z").getTime() / 1000,
       open: parseFloat(values['1. open']),
