@@ -1,8 +1,10 @@
 // src/lib/alphaVantage.ts
 
-// The data structure for a single candlestick. Time can be multiple types.
+import type { UTCTimestamp, BusinessDay } from 'lightweight-charts';
+
+// The data structure for a single candlestick.
 export interface CandlestickData {
-  time: any;
+  time: UTCTimestamp | BusinessDay;
   open: number;
   high: number;
   low: number;
@@ -28,15 +30,15 @@ export async function fetchForexDailyData(fromSymbol: string, toSymbol: string):
       console.error("API Error (Forex Daily):", data['Note'] || 'No time series data found.');
       return [];
     }
-    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => {
-      // FIX: Convert 'YYYY-MM-DD' string into a {year, month, day} object for the chart library
+    const formattedData = Object.entries(timeSeries).map(([date, values]) => {
+      const ohlc = values as ApiOhlcData;
       const [year, month, day] = date.split('-').map(Number);
       return {
         time: { year, month, day },
-        open: parseFloat(values['1. open']),
-        high: parseFloat(values['2. high']),
-        low: parseFloat(values['3. low']),
-        close: parseFloat(values['4. close']),
+        open: parseFloat(ohlc['1. open']),
+        high: parseFloat(ohlc['2. high']),
+        low: parseFloat(ohlc['3. low']),
+        close: parseFloat(ohlc['4. close']),
       };
     });
     return formattedData.reverse();
@@ -59,13 +61,17 @@ export async function fetchForexIntradayData(fromSymbol: string, toSymbol: strin
       console.error("API Error (Forex Intraday):", data['Note'] || `No data for key ${timeSeriesKey}`);
       return [];
     }
-    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
-      time: new Date(date.replace(" ", "T") + "Z").getTime() / 1000,
-      open: parseFloat(values['1. open']),
-      high: parseFloat(values['2. high']),
-      low: parseFloat(values['3. low']),
-      close: parseFloat(values['4. close']),
-    }));
+    // THIS IS THE FIX: Use the 'ApiOhlcData' type here as well
+    const formattedData = Object.entries(timeSeries).map(([date, values]) => {
+      const ohlc = values as ApiOhlcData;
+      return {
+        time: (new Date(date.replace(" ", "T") + "Z").getTime() / 1000) as UTCTimestamp,
+        open: parseFloat(ohlc['1. open']),
+        high: parseFloat(ohlc['2. high']),
+        low: parseFloat(ohlc['3. low']),
+        close: parseFloat(ohlc['4. close']),
+      };
+    });
     return formattedData.reverse();
   } catch (error) {
     console.error("Failed to fetch or process forex intraday data:", error);
