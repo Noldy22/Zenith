@@ -9,13 +9,18 @@ jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: npm ci && npm run build
-        working-directory: ./zenith-app  # <--- ADD THIS LINE
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # THIS IS THE NEW FIX: We change into the directory first, then build.
+      - name: Install Dependencies and Build
+        run: cd ./zenith-app && npm ci && npm run build
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_NOLDY22_ZENITH }}'
           channelId: live
           projectId: zenith-e375b
-          entryPoint: ./zenith-app      # <--- ADD THIS LINE
+          entryPoint: ./zenith-app
