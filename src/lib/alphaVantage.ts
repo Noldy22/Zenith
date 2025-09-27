@@ -1,13 +1,15 @@
 // src/lib/alphaVantage.ts
 
+// The data structure for a single candlestick. Time can be multiple types.
 export interface CandlestickData {
-  time: number | string; // Allow time to be a number (for intraday) or a string (for daily)
+  time: any;
   open: number;
   high: number;
   low: number;
   close: number;
 }
 
+// The structure of the raw data from the Alpha Vantage API
 interface ApiOhlcData {
   '1. open': string;
   '2. high': string;
@@ -26,13 +28,17 @@ export async function fetchForexDailyData(fromSymbol: string, toSymbol: string):
       console.error("API Error (Forex Daily):", data['Note'] || 'No time series data found.');
       return [];
     }
-    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => ({
-      time: date, // <-- THIS IS THE FIX: Pass the date string directly
-      open: parseFloat(values['1. open']),
-      high: parseFloat(values['2. high']),
-      low: parseFloat(values['3. low']),
-      close: parseFloat(values['4. close']),
-    }));
+    const formattedData = Object.entries(timeSeries).map(([date, values]: [string, ApiOhlcData]) => {
+      // FIX: Convert 'YYYY-MM-DD' string into a {year, month, day} object for the chart library
+      const [year, month, day] = date.split('-').map(Number);
+      return {
+        time: { year, month, day },
+        open: parseFloat(values['1. open']),
+        high: parseFloat(values['2. high']),
+        low: parseFloat(values['3. low']),
+        close: parseFloat(values['4. close']),
+      };
+    });
     return formattedData.reverse();
   } catch (error) {
     console.error("Failed to fetch or process forex data:", error);
