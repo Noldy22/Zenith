@@ -31,13 +31,14 @@ interface AnalysisResult {
   criteria: string;
   confidence: "High" | "Medium" | "Low";
   precautions: string[];
+  predicted_success_rate?: string; // New field
 }
 
 export default function ChartsPage() {
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeSymbol, setActiveSymbol] = useState('XAUUSDm'); // Default to Gold
+  const [activeSymbol, setActiveSymbol] = useState('XAUUSDm');
   const [activeTimeframe, setActiveTimeframe] = useState('Daily');
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
@@ -48,8 +49,8 @@ export default function ChartsPage() {
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
+  const [isTraining, setIsTraining] = useState(false);
 
-  // Fetch all symbols from the broker on component mount
   useEffect(() => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (storedCreds) {
@@ -123,7 +124,6 @@ export default function ChartsPage() {
     return () => clearInterval(interval);
   }, [chartData, activeSymbol, activeTimeframe]);
   
-  // FIX: Check if analysisResult and its properties exist before using them
   useEffect(() => {
     if (analysisResult && analysisResult.suggestion && analysisResult.suggestion.action !== 'Neutral') {
       setStopLoss(analysisResult.suggestion.sl?.toFixed(5) || '');
@@ -166,20 +166,46 @@ export default function ChartsPage() {
       alert('Lot size must be greater than 0.');
       return;
     }
+    if (!analysisResult) {
+        alert('Please run analysis before placing a trade.');
+        return;
+    }
     setIsTrading(true);
     try {
       const response = await fetch('http://127.0.0.1:5000/api/execute_trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...JSON.parse(storedCreds), symbol: activeSymbol, lot_size: lotSize, trade_type: tradeType, stop_loss: stopLoss, take_profit: takeProfit }),
+        body: JSON.stringify({ 
+            ...JSON.parse(storedCreds), 
+            symbol: activeSymbol, 
+            lot_size: lotSize, 
+            trade_type: tradeType, 
+            stop_loss: stopLoss, 
+            take_profit: takeProfit,
+            analysis: analysisResult,
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Failed to execute trade.');
-      alert(`Success! ${tradeType} order placed. Order ID: ${result.details.order_id}`);
+      alert(`Success! ${tradeType} order placed and logged. Order ID: ${result.details.order_id}`);
     } catch (error: any) {
       alert(`Trade failed: ${error.message}`);
     } finally {
       setIsTrading(false);
+    }
+  };
+
+  const handleTrainModel = async () => {
+    setIsTraining(true);
+    try {
+      const response = await fetch('http://127.0.0.1:5000/api/train');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Failed to train model.');
+      alert(result.message || 'Training completed!');
+    } catch (error: any) {
+      alert(`Training failed: ${error.message}`);
+    } finally {
+      setIsTraining(false);
     }
   };
 
@@ -232,14 +258,25 @@ export default function ChartsPage() {
           </div>
         </div>
         <div className="md:col-span-1 bg-gray-800 rounded-md p-4 min-h-[600px] overflow-y-auto">
-          <h2 className="text-xl font-bold text-white mb-4">Analysis & Insights</h2>
-          <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading} className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
-            {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-          </button>
+          <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
+          <div className="flex gap-2 mb-4">
+              <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
+                {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+              </button>
+              <button onClick={handleTrainModel} disabled={isTraining} className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
+                {isTraining ? 'Training...' : 'Train AI'}
+              </button>
+          </div>
           <div className="mt-4">
             {isAnalyzing && <p className="text-gray-400">Performing advanced analysis...</p>}
             {analysisResult && (
                 <div className="space-y-3 text-xs">
+                    {analysisResult.predicted_success_rate && (
+                        <div>
+                            <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
+                            <p className="font-semibold text-lg text-white">{analysisResult.predicted_success_rate}</p>
+                        </div>
+                    )}
                     <div>
                         <h3 className="font-bold text-lg text-gray-300">Confidence Level</h3>
                         <p className={`font-semibold text-lg ${ analysisResult.confidence === 'High' ? 'text-green-500' : analysisResult.confidence === 'Medium' ? 'text-yellow-500' : 'text-gray-500' }`}>{analysisResult.confidence}</p>
