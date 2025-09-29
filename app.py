@@ -9,7 +9,7 @@ import threading
 import time
 
 # --- AI Learning Imports ---
-from analysis import find_levels, find_sd_zones, find_order_blocks, get_trade_suggestion, calculate_confidence, generate_market_narrative
+from analysis import find_levels, find_sd_zones, find_order_blocks, find_candlestick_patterns, get_trade_suggestion, calculate_confidence, generate_market_narrative
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features
 
 app = Flask(__name__)
@@ -242,13 +242,16 @@ def analyze_chart():
         support_levels, resistance_levels, pivots = find_levels(df)
         demand_zones, supply_zones = find_sd_zones(df)
         bullish_ob, bearish_ob = find_order_blocks(df, pivots)
+        candlestick_patterns = find_candlestick_patterns(df)
         current_price = df.iloc[-1]['close']
-        suggestion = get_trade_suggestion(current_price, demand_zones, supply_zones)
+        suggestion = get_trade_suggestion(current_price, demand_zones, supply_zones, candlestick_patterns)
 
         analysis_result = {
             "symbol": symbol, "support": support_levels, "resistance": resistance_levels,
             "demand_zones": demand_zones, "supply_zones": supply_zones,
-            "bullish_ob": bullish_ob, "bearish_ob": bearish_ob, "suggestion": suggestion,
+            "bullish_ob": bullish_ob, "bearish_ob": bearish_ob, 
+            "candlestick_patterns": candlestick_patterns,
+            "suggestion": suggestion,
             "precautions": ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."]
         }
         
@@ -323,9 +326,10 @@ def trading_loop():
             support, resistance, pivots = find_levels(df)
             demand, supply = find_sd_zones(df)
             bullish_ob, bearish_ob = find_order_blocks(df, pivots)
-            suggestion = get_trade_suggestion(current_price, demand, supply)
+            candlestick_patterns = find_candlestick_patterns(df)
+            suggestion = get_trade_suggestion(current_price, demand, supply, candlestick_patterns)
             
-            analysis = {"symbol": params['symbol'], "support": support, "resistance": resistance, "demand_zones": demand, "supply_zones": supply, "bullish_ob": bullish_ob, "bearish_ob": bearish_ob}
+            analysis = {"symbol": params['symbol'], "support": support, "resistance": resistance, "demand_zones": demand, "supply_zones": supply, "bullish_ob": bullish_ob, "bearish_ob": bearish_ob, "candlestick_patterns": candlestick_patterns}
             confidence = calculate_confidence(analysis, suggestion)
 
             if suggestion['action'] != 'Neutral' and confidence >= float(params['confidence_threshold']):

@@ -21,6 +21,7 @@ const timeframes = {
 
 interface Zone { high: number; low: number; time: Time; }
 interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
+interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
 interface AnalysisResult {
   support: number[];
   resistance: number[];
@@ -28,6 +29,7 @@ interface AnalysisResult {
   supply_zones: Zone[];
   bullish_ob: Zone[];
   bearish_ob: Zone[];
+  candlestick_patterns: CandlestickPattern[];
   suggestion: Suggestion;
   narrative: string;
   confidence: number;
@@ -426,6 +428,7 @@ export default function ChartsPage() {
                 supplyZones={analysisResult?.supply_zones}
                 bullishOBs={analysisResult?.bullish_ob}
                 bearishOBs={analysisResult?.bearish_ob}
+                candlestickPatterns={analysisResult?.candlestick_patterns}
                 suggestion={analysisResult?.suggestion}
               />
             ) : (

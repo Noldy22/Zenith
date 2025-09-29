@@ -1,6 +1,6 @@
 "use client";
 
-import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay } from 'lightweight-charts';
 import React, { useEffect, useRef } from 'react';
 import { CandlestickData } from '@/lib/alphaVantage';
 
@@ -17,6 +17,13 @@ interface Suggestion {
     tp: number | null;
 }
 
+interface CandlestickPattern {
+    name: string;
+    time: Time;
+    position: 'above' | 'below';
+    price: number;
+}
+
 export const TradingChart = (props: {
     data: CandlestickData[];
     onChartReady: (series: ISeriesApi<"Candlestick">) => void;
@@ -27,8 +34,9 @@ export const TradingChart = (props: {
     bullishOBs?: Zone[];
     bearishOBs?: Zone[];
     suggestion?: Suggestion;
+    candlestickPatterns?: CandlestickPattern[];
 }) => {
-    const { data, onChartReady, supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion } = props;
+    const { data, onChartReady, supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion, candlestickPatterns } = props;
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
@@ -135,7 +143,7 @@ export const TradingChart = (props: {
                 ctx.fillStyle = '#26a69a';
                 ctx.fillRect(entryX, entryY, toolWidth, tpY - entryY);
             }
-
+            
             demandZones?.forEach(z => drawZoneWithLabel(z, '#26a69a', 'Demand', 0.2));
             supplyZones?.forEach(z => drawZoneWithLabel(z, '#ef5350', 'Supply', 0.2));
             bullishOBs?.forEach(z => drawZoneWithLabel(z, '#00BFFF', 'Bullish OB', 0.35));
@@ -165,7 +173,7 @@ export const TradingChart = (props: {
             resizeObserver.current?.disconnect();
         };
 
-    }, [supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion, data]);
+    }, [supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion, candlestickPatterns, data]);
 
     return (
         <div ref={chartContainerRef} className="w-full h-full relative">

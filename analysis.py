@@ -109,7 +109,52 @@ def find_order_blocks(data, pivots):
     
     return unique_bullish[:2], unique_bearish[:2]
 
-def get_trade_suggestion(current_price, demand_zones, supply_zones, risk_reward_ratio=2.0):
+def find_candlestick_patterns(data):
+    """Detects various candlestick patterns."""
+    df = pd.DataFrame(data)
+    patterns = []
+    
+    for i in range(2, len(df)):
+        c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
+        
+        # --- Bullish Engulfing ---
+        if c2['close'] < c2['open'] and c3['close'] > c3['open'] and \
+           c3['close'] > c2['open'] and c3['open'] < c2['close']:
+            patterns.append({'name': 'Bullish Engulfing', 'time': c3['time'], 'position': 'below', 'price': c3['low']})
+
+        # --- Bearish Engulfing ---
+        if c2['close'] > c2['open'] and c3['close'] < c3['open'] and \
+           c3['close'] < c2['open'] and c3['open'] > c2['close']:
+            patterns.append({'name': 'Bearish Engulfing', 'time': c3['time'], 'position': 'above', 'price': c3['high']})
+            
+        # --- Morning Star ---
+        if c1['close'] < c1['open'] and \
+           abs(c2['close'] - c2['open']) < (c2['high'] - c2['low']) * 0.2 and \
+           c3['close'] > c3['open'] and c3['close'] > c1['open']:
+            patterns.append({'name': 'Morning Star', 'time': c3['time'], 'position': 'below', 'price': c3['low']})
+            
+        # --- Shooting Star ---
+        if c3['high'] - c3['close'] > 2 * abs(c3['open'] - c3['close']) and \
+           c3['high'] - c3['open'] > 2 * abs(c3['open'] - c3['close']) and \
+           c3['close'] > c2['high']: # Occurs after an uptrend
+            patterns.append({'name': 'Shooting Star', 'time': c3['time'], 'position': 'above', 'price': c3['high']})
+            
+        # --- Doji ---
+        if abs(c3['open'] - c3['close']) / (c3['high'] - c3['low'] + 0.00001) < 0.1:
+            patterns.append({'name': 'Doji', 'time': c3['time'], 'position': 'above', 'price': c3['high']})
+
+        # --- Hanging Man ---
+        if (c3['low'] - min(c3['open'], c3['close'])) > 2 * abs(c3['open'] - c3['close']) and \
+           c3['high'] - max(c3['open'], c3['close']) < 0.2 * (c3['high'] - c3['low']):
+             patterns.append({'name': 'Hanging Man', 'time': c3['time'], 'position': 'above', 'price': c3['high']})
+
+        # --- Inside Bar ---
+        if c3['high'] < c2['high'] and c3['low'] > c2['low']:
+            patterns.append({'name': 'Inside Bar', 'time': c3['time'], 'position': 'below', 'price': c3['low']})
+
+    return patterns
+
+def get_trade_suggestion(current_price, demand_zones, supply_zones, recent_patterns, risk_reward_ratio=2.0):
     """Generates a structured trade suggestion with improved neutral guidance."""
     # Check for active Buy setup
     if demand_zones:
@@ -134,6 +179,24 @@ def get_trade_suggestion(current_price, demand_zones, supply_zones, risk_reward_
                     "tp": zone['low'] - (risk * risk_reward_ratio),
                     "reason": f"Price has entered a key Supply Zone between {zone['low']:.5f} and {zone['high']:.5f}."
                 }
+    
+    # Check for candlestick patterns for potential trades
+    if recent_patterns:
+        last_pattern = recent_patterns[-1]
+        if last_pattern['name'] in ['Bullish Engulfing', 'Morning Star']:
+             risk = current_price - last_pattern['price']
+             return {
+                "action": "Buy", "entry": current_price, "sl": last_pattern['price'],
+                "tp": current_price + (risk * risk_reward_ratio),
+                "reason": f"A {last_pattern['name']} pattern was detected, suggesting potential upward movement."
+            }
+        if last_pattern['name'] in ['Bearish Engulfing', 'Shooting Star', 'Hanging Man']:
+            risk = last_pattern['price'] - current_price
+            return {
+                "action": "Sell", "entry": current_price, "sl": last_pattern['price'],
+                "tp": current_price - (risk * risk_reward_ratio),
+                "reason": f"A {last_pattern['name']} pattern was detected, suggesting potential downward movement."
+            }
 
     # Improved Neutral Suggestion Logic
     closest_demand = min(demand_zones, key=lambda z: abs(z['low'] - current_price)) if demand_zones else None
@@ -169,6 +232,11 @@ def calculate_confidence(analysis, suggestion):
         for level in analysis.get('support', []):
             if abs(level - entry_price) / entry_price < 0.001:
                 score += 15
+        # Confluence with Bullish candlestick patterns
+        for p in analysis.get('candlestick_patterns', []):
+             if p['name'] in ['Bullish Engulfing', 'Morning Star']:
+                 score += 20
+
 
     elif suggestion['action'] == 'Sell' and suggestion['entry'] is not None:
         entry_price = suggestion['entry']
@@ -180,6 +248,10 @@ def calculate_confidence(analysis, suggestion):
         for level in analysis.get('resistance', []):
             if abs(level - entry_price) / entry_price < 0.001:
                 score += 15
+        # Confluence with Bearish candlestick patterns
+        for p in analysis.get('candlestick_patterns', []):
+            if p['name'] in ['Bearish Engulfing', 'Shooting Star', 'Hanging Man']:
+                score += 20
     
     return min(score, 95) # Cap at 95% to manage expectations
 
