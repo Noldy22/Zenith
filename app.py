@@ -54,7 +54,6 @@ TIMEFRAME_MAP = {
     'D1': mt5.TIMEFRAME_D1, 'W1': mt5.TIMEFRAME_W1, 'MN1': mt5.TIMEFRAME_MN1,
 }
 
-# (format_bar_data, get_all_symbols, get_chart_data, get_latest_bar functions remain the same)
 def format_bar_data(bar, timeframe_str):
     dt_object = datetime.fromtimestamp(bar['time'])
     is_intraday = timeframe_str in ['M1', 'M5', 'M15', 'M30', 'H1', 'H4']
@@ -63,6 +62,30 @@ def format_bar_data(bar, timeframe_str):
     else:
         time_data = {"year": dt_object.year, "month": dt_object.month, "day": dt_object.day}
     return {"time": time_data, "open": bar['open'], "high": bar['high'], "low": bar['low'], "close": bar['close']}
+
+@app.route('/api/get_account_info', methods=['POST'])
+def get_account_info():
+    if not ensure_mt5_initialized():
+        return jsonify({"error": "MetaTrader 5 terminal not found."}), 500
+    try:
+        credentials = request.get_json()
+        login, password, server = int(credentials.get('login')), credentials.get('password'), credentials.get('server')
+        if not all([login, password, server]):
+            return jsonify({"error": "Missing credentials"}), 400
+        if not mt5.login(login=login, password=password, server=server):
+            return jsonify({"error": "Authorization failed"}), 403
+        
+        account_info = mt5.account_info()
+        if account_info is None:
+            return jsonify({"error": "Failed to retrieve account info"}), 500
+            
+        return jsonify({
+            "balance": account_info.balance,
+            "equity": account_info.equity,
+            "profit": account_info.profit
+        })
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
 @app.route('/api/get_all_symbols', methods=['POST'])
 def get_all_symbols():

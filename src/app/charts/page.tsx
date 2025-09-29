@@ -35,14 +35,21 @@ interface AnalysisResult {
 }
 
 export default function ChartsPage() {
+  // Chart and Data State
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [activeSymbol, setActiveSymbol] = useState('XAUUSDm');
   const [activeTimeframe, setActiveTimeframe] = useState('Daily');
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+
+  // UI State
   const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
   const timeframeDropdownRef = useRef<HTMLDivElement>(null);
+  const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
+
+  // Analysis and Trading State
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lotSize, setLotSize] = useState('0.01');
@@ -50,45 +57,27 @@ export default function ChartsPage() {
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
   const [isTraining, setIsTraining] = useState(false);
-  
-  // --- NEW: State for Auto-Trading ---
+
+  // Auto-Trading State
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
   const [autoTradeLotSize, setAutoTradeLotSize] = useState('0.01');
   const [confidenceThreshold, setConfidenceThreshold] = useState('75');
 
+  // MT5 Connection State
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [mt5Login, setMt5Login] = useState('');
+  const [mt5Password, setMt5Password] = useState('');
+  const [mt5Server, setMt5Server] = useState('');
 
-  useEffect(() => {
-    const storedCreds = localStorage.getItem('mt5_credentials');
-    if (storedCreds) {
-      const credentials = JSON.parse(storedCreds);
-      fetch('http://127.0.0.1:5000/api/get_all_symbols', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(credentials),
-      })
-      .then(res => res.ok ? res.json() : Promise.reject('Could not fetch symbols'))
-      .then(data => setSymbols(data))
-      .catch(error => console.error("Failed to fetch symbols:", error));
-    }
-  }, []);
 
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
-        setIsTimeframeOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  useEffect(() => {
+  // Fetch chart data when connection is established and symbol/timeframe changes
+  const fetchChartData = useCallback(() => {
     setIsLoading(true);
-    setAnalysisResult(null); 
+    setAnalysisResult(null);
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
-      alert('Please set your MT5 credentials in the Settings page first.');
       setIsLoading(false);
       return;
     }
@@ -102,18 +91,67 @@ export default function ChartsPage() {
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
     .then(data => {
       setChartData(data);
-      setIsLoading(false);
     })
     .catch(error => {
       console.error("Failed to fetch from backend:", error);
       alert(`Could not load chart data: ${error.error || "Is the Python server running?"}`);
       setChartData([]);
-      setIsLoading(false);
-    });
+    })
+    .finally(() => setIsLoading(false));
   }, [activeSymbol, activeTimeframe]);
 
+
+  // Effect to check connection status on page load
   useEffect(() => {
-    if (!seriesRef.current || chartData.length === 0) return;
+    const checkConnection = async () => {
+        const storedCreds = localStorage.getItem('mt5_credentials');
+        if (storedCreds) {
+            try {
+                const credentials = JSON.parse(storedCreds);
+                const response = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(credentials),
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    setSymbols(data);
+                    setIsConnected(true);
+                } else {
+                    setIsConnected(false);
+                    localStorage.removeItem('mt5_credentials');
+                }
+            } catch (error) {
+                console.error("Connection check failed:", error);
+                setIsConnected(false);
+            }
+        }
+    };
+    checkConnection();
+  }, []);
+
+  // Fetch chart data when connection status changes to true or other dependencies change
+  useEffect(() => {
+    if (isConnected) {
+        fetchChartData();
+    }
+  }, [isConnected, fetchChartData]);
+
+
+  // Effect for dropdown closing
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
+        setIsTimeframeOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Live price update polling
+  useEffect(() => {
+    if (!seriesRef.current || chartData.length === 0 || !isConnected) return;
     const interval = setInterval(() => {
       const storedCreds = localStorage.getItem('mt5_credentials');
       if (!storedCreds) return;
@@ -127,11 +165,13 @@ export default function ChartsPage() {
       .then(res => res.ok ? res.json() : null)
       .then(latestBar => { if (latestBar && seriesRef.current) seriesRef.current.update(latestBar); })
       .catch(error => console.error("Polling error:", error));
-    }, 1000); 
+    }, 1000);
     return () => clearInterval(interval);
-  }, [chartData, activeSymbol, activeTimeframe]);
-  
+  }, [chartData, activeSymbol, activeTimeframe, isConnected]);
+
+  // Auto-populate SL/TP from analysis
   useEffect(() => {
+    // FIX: Add a check to ensure analysisResult and its properties exist
     if (analysisResult && analysisResult.suggestion && analysisResult.suggestion.action !== 'Neutral') {
       setStopLoss(analysisResult.suggestion.sl?.toFixed(5) || '');
       setTakeProfit(analysisResult.suggestion.tp?.toFixed(5) || '');
@@ -144,6 +184,40 @@ export default function ChartsPage() {
   const handleChartReady = useCallback((series: ISeriesApi<"Candlestick">) => {
     seriesRef.current = series;
   }, []);
+
+  // --- Handlers ---
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    const credentials = { login: parseInt(mt5Login, 10), password: mt5Password, server: mt5Server };
+    try {
+        const response = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(credentials),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Failed to connect.');
+        
+        localStorage.setItem('mt5_credentials', JSON.stringify(credentials));
+        setSymbols(result);
+        setIsConnected(true);
+        setIsConnectModalOpen(false);
+        alert('Successfully connected to MT5!');
+    } catch (error: any) {
+        alert(`Connection failed: ${error.message}`);
+    } finally {
+        setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnect = () => {
+    localStorage.removeItem('mt5_credentials');
+    setIsConnected(false);
+    setSymbols([]);
+    setChartData([]);
+    setAnalysisResult(null);
+    alert('Disconnected from MT5.');
+  };
 
   const handleAnalysis = () => {
     if (chartData.length < 20) {
@@ -166,7 +240,7 @@ export default function ChartsPage() {
   const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
-      alert('Credentials not found. Please save them on the Settings page.');
+      alert('You are not connected to MT5.');
       return;
     }
     if (parseFloat(lotSize) <= 0) {
@@ -182,12 +256,12 @@ export default function ChartsPage() {
       const response = await fetch('http://127.0.0.1:5000/api/execute_trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-            ...JSON.parse(storedCreds), 
-            symbol: activeSymbol, 
-            lot_size: lotSize, 
-            trade_type: tradeType, 
-            stop_loss: stopLoss, 
+        body: JSON.stringify({
+            ...JSON.parse(storedCreds),
+            symbol: activeSymbol,
+            lot_size: lotSize,
+            trade_type: tradeType,
+            stop_loss: stopLoss,
             take_profit: takeProfit,
             analysis: analysisResult,
         }),
@@ -201,7 +275,7 @@ export default function ChartsPage() {
       setIsTrading(false);
     }
   };
-  
+
   const handleToggleAutoTrade = async () => {
     setIsTogglingAutoTrade(true);
     const storedCreds = localStorage.getItem('mt5_credentials');
@@ -231,6 +305,7 @@ export default function ChartsPage() {
         
         setIsAutoTrading(!isAutoTrading);
         alert(result.message);
+        if (!isAutoTrading) setIsAutoTradeModalOpen(false); // Close modal on successful start
 
     } catch (error: any) {
         alert(`Error: ${error.message}`);
@@ -238,7 +313,6 @@ export default function ChartsPage() {
         setIsTogglingAutoTrade(false);
     }
   };
-
 
   const handleTrainModel = async () => {
     setIsTraining(true);
@@ -256,38 +330,104 @@ export default function ChartsPage() {
 
   return (
     <main className="p-4">
+      {/* MT5 Connect Modal */}
+      {isConnectModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
+            <h3 className="font-bold text-2xl text-white mb-6 text-center">Connect MT5 Account</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-400">Login ID</label>
+                <input type="text" value={mt5Login} onChange={(e) => setMt5Login(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-400">Password</label>
+                <input type="password" value={mt5Password} onChange={(e) => setMt5Password(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-400">Server</label>
+                <input type="text" value={mt5Server} onChange={(e) => setMt5Server(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              <button onClick={handleConnect} disabled={isConnecting} className="w-full px-4 py-3 bg-primary hover:bg-yellow-600 rounded-lg text-background font-bold text-lg transition-colors disabled:opacity-50">
+                {isConnecting ? 'Connecting...' : 'Connect'}
+              </button>
+              <button onClick={() => setIsConnectModalOpen(false)} className="w-full mt-2 px-4 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg text-white font-bold transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Trade Modal */}
+      {isAutoTradeModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
+            <h3 className="font-bold text-2xl text-white mb-6">Auto-Trade Settings</h3>
+            <div className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-400">Lot Size</label>
+                    <input type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50" />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-400">Min. Confidence (%)</label>
+                    <input type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50" />
+                </div>
+                <button onClick={handleToggleAutoTrade} disabled={isTogglingAutoTrade || isLoading} className={`w-full px-4 py-3 rounded-lg text-background font-bold text-lg transition-colors disabled:opacity-50 ${isAutoTrading ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
+                    {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? `STOP AUTO-TRADING (${activeSymbol})` : 'START AUTO-TRADING')}
+                </button>
+                 <button onClick={() => setIsAutoTradeModalOpen(false)} className="w-full mt-2 px-4 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg text-white font-bold transition-colors">
+                    Cancel
+                </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="md:col-span-2">
-          <div className="grid grid-cols-1 md:grid-cols-2 items-center mb-4 gap-4">
-            <div className="w-full md:w-64">
+          <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
+            <div className="w-full sm:w-auto">
               <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
             </div>
-            <div className="flex justify-end">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 bg-secondary p-1 rounded-md">
+                 <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                 <span className="text-xs font-semibold">{isConnected ? 'Connected' : 'Disconnected'}</span>
+              </div>
+              {isConnected ? (
+                 <button onClick={handleDisconnect} className="px-3 py-2 text-xs rounded-md bg-red-600 text-white hover:bg-red-700">Disconnect</button>
+              ) : (
+                 <button onClick={() => setIsConnectModalOpen(true)} className="px-3 py-2 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700">Connect MT5</button>
+              )}
               <div className="relative" ref={timeframeDropdownRef}>
-                <button onClick={() => setIsTimeframeOpen(!isTimeframeOpen)} className="px-4 py-2 text-sm rounded bg-blue-600 text-white w-24">
+                <button onClick={() => setIsTimeframeOpen(!isTimeframeOpen)} className="px-4 py-2 text-sm rounded-md bg-secondary text-white w-24 hover:bg-gray-700">
                   {activeTimeframe}
                 </button>
                 {isTimeframeOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-24 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-20">
+                  <div className="absolute top-full right-0 mt-1 w-24 bg-secondary border border-border rounded-md shadow-lg z-20">
                     {Object.keys(timeframes).map((tfKey) => (
-                      <button key={tfKey} onClick={() => { setActiveTimeframe(tfKey); setIsTimeframeOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700">
+                      <button key={tfKey} onClick={() => { setActiveTimeframe(tfKey); setIsTimeframeOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-600">
                         {tfKey}
                       </button>
                     ))}
                   </div>
                 )}
               </div>
+              <button onClick={() => setIsAutoTradeModalOpen(true)} disabled={!isConnected} className={`px-4 py-2 text-sm rounded-md font-semibold ${isAutoTrading ? 'bg-green-500 text-white' : 'bg-secondary text-white hover:bg-gray-700'} disabled:opacity-50 disabled:cursor-not-allowed`}>
+                {isAutoTrading ? 'Auto-Trading Active' : 'Auto-Trade'}
+              </button>
             </div>
           </div>
           <div className="text-center mb-4">
             <h1 className="text-3xl font-bold">Trading Chart for {activeSymbol}</h1>
           </div>
-          <div className="relative rounded-md overflow-hidden h-[450px]">
+          <div className="relative rounded-md overflow-hidden h-[450px] bg-secondary">
             {isLoading ? (
               <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
             ) : chartData.length > 0 ? (
-              <TradingChart 
-                data={chartData} 
+              <TradingChart
+                data={chartData}
                 onChartReady={handleChartReady}
                 supportLevels={analysisResult?.support}
                 resistanceLevels={analysisResult?.resistance}
@@ -298,42 +438,23 @@ export default function ChartsPage() {
                 suggestion={analysisResult?.suggestion}
               />
             ) : (
-              <div className="flex justify-center items-center h-full"><p className="text-red-400">Could not load data.</p></div>
+              <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>
             )}
           </div>
         </div>
-        <div className="md:col-span-1 bg-gray-800 rounded-md p-4 min-h-[600px] flex flex-col">
+        <div className="md:col-span-1 bg-secondary rounded-xl p-4 min-h-[600px] flex flex-col shadow-lg">
           <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
-          <div className="flex gap-2 mb-4">
-              <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
-                {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-              </button>
-              <button onClick={handleTrainModel} disabled={isTraining} className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
-                {isTraining ? 'Training...' : 'Train AI'}
-              </button>
-          </div>
-          
-          {/* NEW: Auto-Trading Panel */}
-          <div className='border-t border-b border-gray-700 py-4 my-4'>
-            <h3 className="font-bold text-lg text-white mb-3">Auto-Trade Settings</h3>
-            <div className="space-y-3">
-                <div>
-                    <label className="block text-sm font-medium text-gray-400">Lot Size</label>
-                    <input type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} className="w-full bg-gray-700 rounded p-2 text-sm disabled:opacity-50" />
-                </div>
-                <div>
-                    <label className="block text-sm font-medium text-gray-400">Min. Confidence (%)</label>
-                    <input type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} className="w-full bg-gray-700 rounded p-2 text-sm disabled:opacity-50" />
-                </div>
-                <button onClick={handleToggleAutoTrade} disabled={isTogglingAutoTrade || isLoading} className={`w-full px-4 py-2 rounded text-white font-bold transition-colors disabled:opacity-50 ${isAutoTrading ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
-                    {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? `STOP AUTO-TRADING (${activeSymbol})` : 'START AUTO-TRADING')}
+            <div className="flex gap-2 mb-4">
+                <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading || !isConnected} className="flex-1 px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
+                  {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+                </button>
+                <button onClick={handleTrainModel} disabled={isTraining || !isConnected} className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
+                  {isTraining ? 'Training...' : 'Train AI'}
                 </button>
             </div>
-          </div>
-          
           <div className="mt-4 flex-grow overflow-y-auto">
             {isAnalyzing && <p className="text-gray-400">Performing advanced analysis...</p>}
-            {analysisResult && (
+            {analysisResult ? (
                 <div className="space-y-4 text-sm">
                     {analysisResult.predicted_success_rate && (
                         <div>
@@ -355,7 +476,7 @@ export default function ChartsPage() {
                         <h3 className="font-bold text-lg text-yellow-300">AI Suggestion</h3>
                         <p className="text-gray-300">{analysisResult.suggestion.reason}</p>
                     </div>
-                    
+
                     <div>
                         <h3 className="font-bold text-lg text-blue-300">Market Narrative</h3>
                         <p className="text-gray-400 italic">
@@ -367,22 +488,22 @@ export default function ChartsPage() {
                         <h3 className="font-bold text-lg text-gray-300 mt-3">Precautions</h3>
                         <ul className="list-disc list-inside text-gray-400 text-xs space-y-1">{analysisResult.precautions.map((p, i) => <li key={i}>{p}</li>)}</ul>
                     </div>
-                    
+
                     {analysisResult.suggestion.action !== 'Neutral' && (
-                        <div className="mt-6 border-t border-gray-700 pt-4">
+                        <div className="mt-6 border-t border-border pt-4">
                             <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>
                             <div className="space-y-3">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400">Lot Size</label>
-                                    <input type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} className="w-full bg-gray-700 rounded p-2 text-sm" />
+                                    <input type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400">Stop Loss (Price)</label>
-                                    <input type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" className="w-full bg-gray-700 rounded p-2 text-sm" />
+                                    <input type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400">Take Profit (Price)</label>
-                                    <input type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" className="w-full bg-gray-700 rounded p-2 text-sm" />
+                                    <input type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
                                 </div>
                                 <div className="flex gap-x-2">
                                     <button onClick={() => handleManualTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'BUY'}</button>
@@ -391,6 +512,10 @@ export default function ChartsPage() {
                             </div>
                         </div>
                     )}
+                </div>
+            ) : (
+                 <div className="text-center text-gray-500 mt-10">
+                    <p>{isConnected ? 'Click "Analyze" to get AI insights.' : 'Connect your MT5 account to begin.'}</p>
                 </div>
             )}
           </div>

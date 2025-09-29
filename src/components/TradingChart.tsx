@@ -29,7 +29,7 @@ export const TradingChart = (props: {
     suggestion?: Suggestion;
 }) => {
     const { data, onChartReady, supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion } = props;
-    
+
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -42,11 +42,11 @@ export const TradingChart = (props: {
         if (!chartContainerRef.current) return;
 
         const chart = createChart(chartContainerRef.current, {
-            layout: { background: { type: ColorType.Solid, color: '#131222' }, textColor: '#D9D9D9' },
-            grid: { vertLines: { color: '#2A2E39' }, horzLines: { color: '#2A2E39' } },
+            layout: { background: { type: ColorType.Solid, color: '#1A1A1A' }, textColor: '#F5F5F5' },
+            grid: { vertLines: { color: '#2A2A2A' }, horzLines: { color: '#2A2A2A' } },
             crosshair: { mode: CrosshairMode.Normal },
-            rightPriceScale: { visible: true, borderColor: '#485158' },
-            timeScale: { borderColor: '#485158', timeVisible: true },
+            rightPriceScale: { visible: true, borderColor: '#3A3A3A' },
+            timeScale: { borderColor: '#3A3A3A', timeVisible: true },
         });
         chartRef.current = chart;
 
@@ -73,7 +73,7 @@ export const TradingChart = (props: {
             chartRef.current?.timeScale().fitContent();
         }
     }, [data]);
-    
+
     // Effect to draw S/R lines and manage the canvas for zones
     useEffect(() => {
         const chart = chartRef.current;
@@ -97,7 +97,7 @@ export const TradingChart = (props: {
                 const yBottom = series.priceToCoordinate(zone.low);
                 const xStart = chart.timeScale().timeToCoordinate(zone.time);
                 if (yTop === null || yBottom === null || xStart === null) return;
-                
+
                 const chartWidth = chart.timeScale().width();
                 ctx.globalAlpha = transparency;
                 ctx.fillStyle = color;
@@ -111,7 +111,7 @@ export const TradingChart = (props: {
 
             const drawSuggestionTool = (sugg: Suggestion) => {
                 if (sugg.action === 'Neutral' || !sugg.entry || !sugg.sl || !sugg.tp || data.length === 0) return;
-                
+
                 const entryY = series.priceToCoordinate(sugg.entry);
                 const slY = series.priceToCoordinate(sugg.sl);
                 const tpY = series.priceToCoordinate(sugg.tp);
@@ -130,7 +130,7 @@ export const TradingChart = (props: {
                 ctx.globalAlpha = 0.3;
                 ctx.fillStyle = '#ef5350';
                 ctx.fillRect(entryX, entryY, toolWidth, slY - entryY);
-                
+
                 ctx.globalAlpha = 0.3;
                 ctx.fillStyle = '#26a69a';
                 ctx.fillRect(entryX, entryY, toolWidth, tpY - entryY);
@@ -142,11 +142,11 @@ export const TradingChart = (props: {
             bearishOBs?.forEach(z => drawZoneWithLabel(z, '#FF69B4', 'Bearish OB', 0.35));
             if(suggestion) drawSuggestionTool(suggestion);
         };
-        
+
         drawVisuals();
         chart.timeScale().subscribeVisibleLogicalRangeChange(drawVisuals);
         if (resizeObserver.current) resizeObserver.current.disconnect();
-        
+
         resizeObserver.current = new ResizeObserver(entries => {
             const { width, height } = entries[0].contentRect;
             if (chart && canvas) {
@@ -159,7 +159,7 @@ export const TradingChart = (props: {
         if(chartContainerRef.current) {
             resizeObserver.current.observe(chartContainerRef.current);
         }
-        
+
         return () => {
             chart.timeScale().unsubscribeVisibleLogicalRangeChange(drawVisuals);
             resizeObserver.current?.disconnect();

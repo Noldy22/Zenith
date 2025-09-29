@@ -14,7 +14,6 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
   const [isOpen, setIsOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // Filter symbols based on the search term
   useEffect(() => {
     if (searchTerm === '') {
       setFilteredSymbols(symbols);
@@ -25,7 +24,6 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
     }
   }, [searchTerm, symbols]);
 
-  // Effect to handle clicks outside the component to close the dropdown
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
@@ -39,9 +37,9 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
   }, [wrapperRef]);
 
   const handleSelect = (symbol: string) => {
-    setSearchTerm(symbol); // Update input text to the selected symbol
-    onSymbolSelect(symbol); // Trigger the chart load on the parent page
-    setIsOpen(false); // Close the dropdown
+    setSearchTerm(symbol);
+    onSymbolSelect(symbol);
+    setIsOpen(false);
   };
 
   return (
@@ -56,10 +54,10 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
         }}
         onFocus={() => setIsOpen(true)}
         placeholder="Search symbol..."
-        className="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+        className="w-full bg-secondary border border-border rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary"
       />
       {isOpen && filteredSymbols.length > 0 && (
-        <ul className="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-md max-h-60 overflow-y-auto shadow-lg">
+        <ul className="absolute z-10 w-full mt-1 bg-secondary border border-border rounded-md max-h-60 overflow-y-auto shadow-lg">
           {filteredSymbols.map(symbol => (
             <li
               key={symbol}
