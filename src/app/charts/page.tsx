@@ -28,10 +28,10 @@ interface AnalysisResult {
   bullish_ob: Zone[];
   bearish_ob: Zone[];
   suggestion: Suggestion;
-  criteria: string;
-  confidence: "High" | "Medium" | "Low";
+  narrative: string;
+  confidence: number;
   precautions: string[];
-  predicted_success_rate?: string; // New field
+  predicted_success_rate?: string;
 }
 
 export default function ChartsPage() {
@@ -50,6 +50,13 @@ export default function ChartsPage() {
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
   const [isTraining, setIsTraining] = useState(false);
+  
+  // --- NEW: State for Auto-Trading ---
+  const [isAutoTrading, setIsAutoTrading] = useState(false);
+  const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
+  const [autoTradeLotSize, setAutoTradeLotSize] = useState('0.01');
+  const [confidenceThreshold, setConfidenceThreshold] = useState('75');
+
 
   useEffect(() => {
     const storedCreds = localStorage.getItem('mt5_credentials');
@@ -148,7 +155,7 @@ export default function ChartsPage() {
     fetch('http://127.0.0.1:5000/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(chartData),
+        body: JSON.stringify({ chartData: chartData, symbol: activeSymbol }),
     })
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
     .then((data: AnalysisResult) => setAnalysisResult(data))
@@ -156,7 +163,7 @@ export default function ChartsPage() {
     .finally(() => setIsAnalyzing(false));
   };
 
-  const handleTrade = async (tradeType: 'BUY' | 'SELL') => {
+  const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
       alert('Credentials not found. Please save them on the Settings page.');
@@ -194,6 +201,44 @@ export default function ChartsPage() {
       setIsTrading(false);
     }
   };
+  
+  const handleToggleAutoTrade = async () => {
+    setIsTogglingAutoTrade(true);
+    const storedCreds = localStorage.getItem('mt5_credentials');
+    if (!storedCreds) {
+        alert('Credentials not found. Please save them on the Settings page.');
+        setIsTogglingAutoTrade(false);
+        return;
+    }
+
+    const endpoint = isAutoTrading ? '/api/stop_autotrade' : '/api/start_autotrade';
+    const body = isAutoTrading ? {} : {
+        ...JSON.parse(storedCreds),
+        symbol: activeSymbol,
+        timeframe: timeframes[activeTimeframe as keyof typeof timeframes],
+        lot_size: autoTradeLotSize,
+        confidence_threshold: confidenceThreshold,
+    };
+
+    try {
+        const response = await fetch(`http://127.0.0.1:5000${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Failed to toggle auto-trade.');
+        
+        setIsAutoTrading(!isAutoTrading);
+        alert(result.message);
+
+    } catch (error: any) {
+        alert(`Error: ${error.message}`);
+    } finally {
+        setIsTogglingAutoTrade(false);
+    }
+  };
+
 
   const handleTrainModel = async () => {
     setIsTraining(true);
@@ -257,7 +302,7 @@ export default function ChartsPage() {
             )}
           </div>
         </div>
-        <div className="md:col-span-1 bg-gray-800 rounded-md p-4 min-h-[600px] overflow-y-auto">
+        <div className="md:col-span-1 bg-gray-800 rounded-md p-4 min-h-[600px] flex flex-col">
           <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
           <div className="flex gap-2 mb-4">
               <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500">
@@ -267,10 +312,29 @@ export default function ChartsPage() {
                 {isTraining ? 'Training...' : 'Train AI'}
               </button>
           </div>
-          <div className="mt-4">
+          
+          {/* NEW: Auto-Trading Panel */}
+          <div className='border-t border-b border-gray-700 py-4 my-4'>
+            <h3 className="font-bold text-lg text-white mb-3">Auto-Trade Settings</h3>
+            <div className="space-y-3">
+                <div>
+                    <label className="block text-sm font-medium text-gray-400">Lot Size</label>
+                    <input type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} className="w-full bg-gray-700 rounded p-2 text-sm disabled:opacity-50" />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-400">Min. Confidence (%)</label>
+                    <input type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} className="w-full bg-gray-700 rounded p-2 text-sm disabled:opacity-50" />
+                </div>
+                <button onClick={handleToggleAutoTrade} disabled={isTogglingAutoTrade || isLoading} className={`w-full px-4 py-2 rounded text-white font-bold transition-colors disabled:opacity-50 ${isAutoTrading ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
+                    {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? `STOP AUTO-TRADING (${activeSymbol})` : 'START AUTO-TRADING')}
+                </button>
+            </div>
+          </div>
+          
+          <div className="mt-4 flex-grow overflow-y-auto">
             {isAnalyzing && <p className="text-gray-400">Performing advanced analysis...</p>}
             {analysisResult && (
-                <div className="space-y-3 text-xs">
+                <div className="space-y-4 text-sm">
                     {analysisResult.predicted_success_rate && (
                         <div>
                             <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
@@ -278,44 +342,35 @@ export default function ChartsPage() {
                         </div>
                     )}
                     <div>
-                        <h3 className="font-bold text-lg text-gray-300">Confidence Level</h3>
-                        <p className={`font-semibold text-lg ${ analysisResult.confidence === 'High' ? 'text-green-500' : analysisResult.confidence === 'Medium' ? 'text-yellow-500' : 'text-gray-500' }`}>{analysisResult.confidence}</p>
+                        <h3 className="font-bold text-lg text-gray-300">Confidence</h3>
+                        <p className={`font-semibold text-2xl ${
+                            analysisResult.confidence > 75 ? 'text-green-400'
+                            : analysisResult.confidence >= 50 ? 'text-yellow-400'
+                            : 'text-red-400'
+                        }`}>
+                            {analysisResult.confidence.toFixed(0)}%
+                        </p>
                     </div>
                     <div>
                         <h3 className="font-bold text-lg text-yellow-300">AI Suggestion</h3>
-                        <p className={`font-semibold ${ analysisResult.suggestion.action === 'Buy' ? 'text-green-400' : analysisResult.suggestion.action === 'Sell' ? 'text-red-400' : 'text-gray-300' }`}>{analysisResult.suggestion.reason}</p>
+                        <p className="text-gray-300">{analysisResult.suggestion.reason}</p>
                     </div>
+                    
                     <div>
-                        <h3 className="font-bold text-lg text-green-400">Detected Support Levels</h3>
-                        {analysisResult.support.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.support.map((level, i) => <li key={`s-${i}`}>{level.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
+                        <h3 className="font-bold text-lg text-blue-300">Market Narrative</h3>
+                        <p className="text-gray-400 italic">
+                            {analysisResult.narrative}
+                        </p>
                     </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-red-400">Detected Resistance Levels</h3>
-                        {analysisResult.resistance.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.resistance.map((level, i) => <li key={`r-${i}`}>{level.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-green-400 mt-3">Demand Zones</h3>
-                        {analysisResult.demand_zones.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.demand_zones.map((zone, i) => <li key={`d-${i}`}>{zone.high.toFixed(5)} - {zone.low.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-red-400 mt-3">Supply Zones</h3>
-                        {analysisResult.supply_zones.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.supply_zones.map((zone, i) => <li key={`sup-${i}`}>{zone.high.toFixed(5)} - {zone.low.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-blue-400 mt-3">Bullish Order Blocks</h3>
-                        {analysisResult.bullish_ob.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.bullish_ob.map((zone, i) => <li key={`bob-${i}`}>{zone.high.toFixed(5)} - {zone.low.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-pink-400 mt-3">Bearish Order Blocks</h3>
-                        {analysisResult.bearish_ob.length > 0 ? ( <ul className="list-disc list-inside text-gray-400">{analysisResult.bearish_ob.map((zone, i) => <li key={`beob-${i}`}>{zone.high.toFixed(5)} - {zone.low.toFixed(5)}</li>)}</ul> ) : <p className="text-gray-500">None found.</p>}
-                    </div>
+
                     <div>
                         <h3 className="font-bold text-lg text-gray-300 mt-3">Precautions</h3>
-                        <ul className="list-disc list-inside text-gray-400 text-sm space-y-1">{analysisResult.precautions.map((p, i) => <li key={i}>{p}</li>)}</ul>
+                        <ul className="list-disc list-inside text-gray-400 text-xs space-y-1">{analysisResult.precautions.map((p, i) => <li key={i}>{p}</li>)}</ul>
                     </div>
+                    
                     {analysisResult.suggestion.action !== 'Neutral' && (
                         <div className="mt-6 border-t border-gray-700 pt-4">
-                            <h3 className="font-bold text-lg text-white mb-2">Trade Execution</h3>
+                            <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>
                             <div className="space-y-3">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400">Lot Size</label>
@@ -330,8 +385,8 @@ export default function ChartsPage() {
                                     <input type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" className="w-full bg-gray-700 rounded p-2 text-sm" />
                                 </div>
                                 <div className="flex gap-x-2">
-                                    <button onClick={() => handleTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'BUY'}</button>
-                                    <button onClick={() => handleTrade('SELL')} disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'SELL'}</button>
+                                    <button onClick={() => handleManualTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'BUY'}</button>
+                                    <button onClick={() => handleManualTrade('SELL')} disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'SELL'}</button>
                                 </div>
                             </div>
                         </div>

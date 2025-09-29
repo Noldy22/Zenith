@@ -110,51 +110,111 @@ def find_order_blocks(data, pivots):
     return unique_bullish[:2], unique_bearish[:2]
 
 def get_trade_suggestion(current_price, demand_zones, supply_zones, risk_reward_ratio=2.0):
-    """Generates a structured trade suggestion with Entry, SL, and TP."""
-    suggestion = {"action": "Neutral", "entry": None, "sl": None, "tp": None, "reason": "Price is between zones"}
-    
+    """Generates a structured trade suggestion with improved neutral guidance."""
+    # Check for active Buy setup
     if demand_zones:
-        first_demand = demand_zones[0]
-        if first_demand['low'] <= current_price <= first_demand['high']:
-            risk = first_demand['high'] - first_demand['low']
-            suggestion = {
-                "action": "Buy",
-                "entry": first_demand['high'],
-                "sl": first_demand['low'],
-                "tp": first_demand['high'] + (risk * risk_reward_ratio),
-                "reason": "Price in Demand Zone"
-            }
-            return suggestion
+        for zone in demand_zones:
+            if zone['low'] <= current_price <= zone['high']:
+                risk = zone['high'] - zone['low']
+                return {
+                    "action": "Buy",
+                    "entry": zone['high'], "sl": zone['low'],
+                    "tp": zone['high'] + (risk * risk_reward_ratio),
+                    "reason": f"Price has entered a key Demand Zone between {zone['low']:.5f} and {zone['high']:.5f}."
+                }
 
+    # Check for active Sell setup
     if supply_zones:
-        first_supply = supply_zones[0]
-        if first_supply['low'] <= current_price <= first_supply['high']:
-            risk = first_supply['high'] - first_supply['low']
-            suggestion = {
-                "action": "Sell",
-                "entry": first_supply['low'],
-                "sl": first_supply['high'],
-                "tp": first_supply['low'] - (risk * risk_reward_ratio),
-                "reason": "Price in Supply Zone"
-            }
-            return suggestion
-            
-    return suggestion
+        for zone in supply_zones:
+            if zone['low'] <= current_price <= zone['high']:
+                risk = zone['high'] - zone['low']
+                return {
+                    "action": "Sell",
+                    "entry": zone['low'], "sl": zone['high'],
+                    "tp": zone['low'] - (risk * risk_reward_ratio),
+                    "reason": f"Price has entered a key Supply Zone between {zone['low']:.5f} and {zone['high']:.5f}."
+                }
 
-def calculate_confidence(analysis):
-    """Calculates a confidence score based on confluence of analysis."""
-    score = 0
-    if analysis.get("support") or analysis.get("resistance"):
-        score += 1
-    if analysis.get("demand_zones"):
-        score += 1
-    if analysis.get("supply_zones"):
-        score += 1
-    if analysis.get("bullish_ob") or analysis.get("bearish_ob"):
-        score += 2 
+    # Improved Neutral Suggestion Logic
+    closest_demand = min(demand_zones, key=lambda z: abs(z['low'] - current_price)) if demand_zones else None
+    closest_supply = min(supply_zones, key=lambda z: abs(z['high'] - current_price)) if supply_zones else None
+    
+    reason = "Market conditions are neutral. No high-probability setup detected at the current price."
+    if closest_demand and current_price > closest_demand['high']:
+        if closest_supply and current_price < closest_supply['low']:
+             reason = (f"Price is trading between supply ({closest_supply['high']:.5f}) and demand "
+                       f"({closest_demand['low']:.5f}). Wait for a test of these boundaries before considering a trade.")
+        else:
+            reason = f"The nearest area of interest is the demand zone around {closest_demand['low']:.5f}. A pullback to this level could present a buying opportunity."
+    elif closest_supply and current_price < closest_supply['low']:
+        reason = f"The nearest area of interest is the supply zone around {closest_supply['high']:.5f}. A rally towards this level could present a selling opportunity."
 
-    if score >= 4:
-        return "High"
-    if score >= 2:
-        return "Medium"
-    return "Low"
+    return {"action": "Neutral", "entry": None, "sl": None, "tp": None, "reason": reason}
+
+
+def calculate_confidence(analysis, suggestion):
+    """Calculates a confidence score as a percentage based on confluence."""
+    if suggestion['action'] == 'Neutral':
+        return 30
+
+    score = 50  # Base confidence for any valid trade setup
+    
+    if suggestion['action'] == 'Buy' and suggestion['entry'] is not None:
+        entry_price = suggestion['entry']
+        # Confluence with Bullish Order Block
+        for ob in analysis.get('bullish_ob', []):
+            if abs(ob['high'] - entry_price) / entry_price < 0.001: 
+                score += 25
+        # Confluence with Support level
+        for level in analysis.get('support', []):
+            if abs(level - entry_price) / entry_price < 0.001:
+                score += 15
+
+    elif suggestion['action'] == 'Sell' and suggestion['entry'] is not None:
+        entry_price = suggestion['entry']
+        # Confluence with Bearish Order Block
+        for ob in analysis.get('bearish_ob', []):
+            if abs(ob['low'] - entry_price) / entry_price < 0.001:
+                score += 25
+        # Confluence with Resistance level
+        for level in analysis.get('resistance', []):
+            if abs(level - entry_price) / entry_price < 0.001:
+                score += 15
+    
+    return min(score, 95) # Cap at 95% to manage expectations
+
+def generate_market_narrative(current_price, analysis):
+    """Creates a human-readable explanation of the market structure."""
+    symbol = analysis.get('symbol', 'the asset')
+    narrative = f"The current price of {symbol} is {current_price:.5f}. "
+    
+    s_levels = analysis.get('support', [])
+    r_levels = analysis.get('resistance', [])
+    d_zones = analysis.get('demand_zones', [])
+    s_zones = analysis.get('supply_zones', [])
+    
+    # Find the closest significant level/zone above and below the current price
+    potential_resistances = r_levels + [z['high'] for z in s_zones]
+    potential_supports = s_levels + [z['low'] for z in d_zones]
+    
+    closest_res = min([r for r in potential_resistances if r > current_price], default=None)
+    closest_sup = max([s for s in potential_supports if s < current_price], default=None)
+
+    if closest_res:
+        narrative += f"We see immediate resistance around {closest_res:.5f}. A break above this level could signal further upward momentum. "
+    else:
+        narrative += "There is no significant overhead resistance nearby, suggesting potential for upward movement. "
+        
+    if closest_sup:
+        narrative += f"On the downside, key support is located near {closest_sup:.5f}. If this level holds, it could act as a floor for the price. "
+    else:
+        narrative += "There is no clear immediate support, which could indicate volatility if the price starts to fall. "
+        
+    if analysis.get('bullish_ob') and analysis.get('bearish_ob'):
+         narrative += "Both bullish and bearish order blocks are present, indicating institutional interest on both sides of the market."
+    elif analysis.get('bullish_ob'):
+         narrative += "The presence of bullish order blocks suggests that buyers have previously shown strength at lower levels."
+    elif analysis.get('bearish_ob'):
+         narrative += "Bearish order blocks above the current price suggest areas where sellers might re-emerge."
+
+    return narrative
