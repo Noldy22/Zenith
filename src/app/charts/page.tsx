@@ -5,6 +5,7 @@ import SymbolSearch from "@/components/SymbolSearch";
 import { CandlestickData } from "@/lib/alphaVantage";
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { ISeriesApi, Time } from "lightweight-charts";
+import { useAlert } from '@/context/AlertContext';
 
 const timeframes = {
   'M1': 'M1',
@@ -35,6 +36,8 @@ interface AnalysisResult {
 }
 
 export default function ChartsPage() {
+  const { showAlert } = useAlert();
+  
   // Chart and Data State
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -72,7 +75,6 @@ export default function ChartsPage() {
   const [mt5Server, setMt5Server] = useState('');
 
 
-  // Fetch chart data when connection is established and symbol/timeframe changes
   const fetchChartData = useCallback(() => {
     setIsLoading(true);
     setAnalysisResult(null);
@@ -94,14 +96,12 @@ export default function ChartsPage() {
     })
     .catch(error => {
       console.error("Failed to fetch from backend:", error);
-      alert(`Could not load chart data: ${error.error || "Is the Python server running?"}`);
+      showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
     .finally(() => setIsLoading(false));
-  }, [activeSymbol, activeTimeframe]);
+  }, [activeSymbol, activeTimeframe, showAlert]);
 
-
-  // Effect to check connection status on page load
   useEffect(() => {
     const checkConnection = async () => {
         const storedCreds = localStorage.getItem('mt5_credentials');
@@ -130,15 +130,12 @@ export default function ChartsPage() {
     checkConnection();
   }, []);
 
-  // Fetch chart data when connection status changes to true or other dependencies change
   useEffect(() => {
     if (isConnected) {
         fetchChartData();
     }
   }, [isConnected, fetchChartData]);
 
-
-  // Effect for dropdown closing
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
@@ -149,7 +146,6 @@ export default function ChartsPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Live price update polling
   useEffect(() => {
     if (!seriesRef.current || chartData.length === 0 || !isConnected) return;
     const interval = setInterval(() => {
@@ -169,9 +165,7 @@ export default function ChartsPage() {
     return () => clearInterval(interval);
   }, [chartData, activeSymbol, activeTimeframe, isConnected]);
 
-  // Auto-populate SL/TP from analysis
   useEffect(() => {
-    // FIX: Add a check to ensure analysisResult and its properties exist
     if (analysisResult && analysisResult.suggestion && analysisResult.suggestion.action !== 'Neutral') {
       setStopLoss(analysisResult.suggestion.sl?.toFixed(5) || '');
       setTakeProfit(analysisResult.suggestion.tp?.toFixed(5) || '');
@@ -185,7 +179,6 @@ export default function ChartsPage() {
     seriesRef.current = series;
   }, []);
 
-  // --- Handlers ---
   const handleConnect = async () => {
     setIsConnecting(true);
     const credentials = { login: parseInt(mt5Login, 10), password: mt5Password, server: mt5Server };
@@ -202,9 +195,9 @@ export default function ChartsPage() {
         setSymbols(result);
         setIsConnected(true);
         setIsConnectModalOpen(false);
-        alert('Successfully connected to MT5!');
+        showAlert('Successfully connected to MT5!', 'success');
     } catch (error: any) {
-        alert(`Connection failed: ${error.message}`);
+        showAlert(`Connection failed: ${error.message}`, 'error');
     } finally {
         setIsConnecting(false);
     }
@@ -216,12 +209,12 @@ export default function ChartsPage() {
     setSymbols([]);
     setChartData([]);
     setAnalysisResult(null);
-    alert('Disconnected from MT5.');
+    showAlert('Disconnected from MT5.', 'info');
   };
 
   const handleAnalysis = () => {
     if (chartData.length < 20) {
-      alert("Not enough chart data for analysis.");
+      showAlert("Not enough chart data for analysis.", 'error');
       return;
     }
     setIsAnalyzing(true);
@@ -233,22 +226,22 @@ export default function ChartsPage() {
     })
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
     .then((data: AnalysisResult) => setAnalysisResult(data))
-    .catch(error => alert(`Analysis failed: ${error.error || "An unknown error."}`))
+    .catch(error => showAlert(`Analysis failed: ${error.error || "An unknown error."}`, 'error'))
     .finally(() => setIsAnalyzing(false));
   };
 
   const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
-      alert('You are not connected to MT5.');
+      showAlert('You are not connected to MT5.', 'error');
       return;
     }
     if (parseFloat(lotSize) <= 0) {
-      alert('Lot size must be greater than 0.');
+      showAlert('Lot size must be greater than 0.', 'error');
       return;
     }
     if (!analysisResult) {
-        alert('Please run analysis before placing a trade.');
+        showAlert('Please run analysis before placing a trade.', 'error');
         return;
     }
     setIsTrading(true);
@@ -268,19 +261,19 @@ export default function ChartsPage() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Failed to execute trade.');
-      alert(`Success! ${tradeType} order placed and logged. Order ID: ${result.details.order_id}`);
+      showAlert(`Success! ${tradeType} order placed. Order ID: ${result.details.order_id}`, 'success');
     } catch (error: any) {
-      alert(`Trade failed: ${error.message}`);
+      showAlert(`Trade failed: ${error.message}`, 'error');
     } finally {
       setIsTrading(false);
     }
   };
-
+  
   const handleToggleAutoTrade = async () => {
     setIsTogglingAutoTrade(true);
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
-        alert('Credentials not found. Please save them on the Settings page.');
+        showAlert('Credentials not found. Please connect your account first.', 'error');
         setIsTogglingAutoTrade(false);
         return;
     }
@@ -304,11 +297,11 @@ export default function ChartsPage() {
         if (!response.ok) throw new Error(result.error || 'Failed to toggle auto-trade.');
         
         setIsAutoTrading(!isAutoTrading);
-        alert(result.message);
-        if (!isAutoTrading) setIsAutoTradeModalOpen(false); // Close modal on successful start
+        showAlert(result.message, 'success');
+        if (!isAutoTrading) setIsAutoTradeModalOpen(false);
 
     } catch (error: any) {
-        alert(`Error: ${error.message}`);
+        showAlert(`Error: ${error.message}`, 'error');
     } finally {
         setIsTogglingAutoTrade(false);
     }
@@ -320,9 +313,9 @@ export default function ChartsPage() {
       const response = await fetch('http://127.0.0.1:5000/api/train');
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Failed to train model.');
-      alert(result.message || 'Training completed!');
+      showAlert(result.message || 'Training completed!', 'success');
     } catch (error: any) {
-      alert(`Training failed: ${error.message}`);
+      showAlert(`Training failed: ${error.message}`, 'error');
     } finally {
       setIsTraining(false);
     }
@@ -330,7 +323,6 @@ export default function ChartsPage() {
 
   return (
     <main className="p-4">
-      {/* MT5 Connect Modal */}
       {isConnectModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
           <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
@@ -359,7 +351,6 @@ export default function ChartsPage() {
         </div>
       )}
 
-      {/* Auto-Trade Modal */}
       {isAutoTradeModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
           <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
