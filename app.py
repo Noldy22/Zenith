@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import MetaTrader5 as mt5
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import json
 import threading
@@ -16,8 +16,6 @@ app = Flask(__name__)
 CORS(app)
 
 # --- Global State for Auto-Trading ---
-# WARNING: This simple global state is not suitable for production servers.
-# It works for the Flask development server but can cause issues with multi-process servers (like Gunicorn).
 AUTOTRADE_STATE = {
     'is_running': False,
     'thread': None,
@@ -87,6 +85,81 @@ def get_account_info():
     except Exception as e:
         return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
+@app.route('/api/get_open_positions', methods=['POST'])
+def get_open_positions():
+    if not ensure_mt5_initialized():
+        return jsonify({"error": "MetaTrader 5 terminal not found."}), 500
+    try:
+        credentials = request.get_json()
+        login, password, server = int(credentials.get('login')), credentials.get('password'), credentials.get('server')
+        if not all([login, password, server]):
+            return jsonify({"error": "Missing credentials"}), 400
+        if not mt5.login(login=login, password=password, server=server):
+            return jsonify({"error": "Authorization failed"}), 403
+        
+        positions = mt5.positions_get()
+        if positions is None:
+            return jsonify([])
+
+        positions_list = []
+        for pos in positions:
+            pos_dict = {
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "type": "BUY" if pos.type == 0 else "SELL",
+                "volume": pos.volume,
+                "price_open": pos.price_open,
+                "sl": pos.sl,
+                "tp": pos.tp,
+                "profit": pos.profit,
+                "time": pos.time,
+            }
+            positions_list.append(pos_dict)
+            
+        return jsonify(positions_list)
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error: {e}"}), 500
+
+@app.route('/api/get_history_deals', methods=['POST'])
+def get_history_deals():
+    if not ensure_mt5_initialized():
+        return jsonify({"error": "MetaTrader 5 terminal not found."}), 500
+    try:
+        credentials = request.get_json()
+        login, password, server = int(credentials.get('login')), credentials.get('password'), credentials.get('server')
+        if not all([login, password, server]):
+            return jsonify({"error": "Missing credentials"}), 400
+        if not mt5.login(login=login, password=password, server=server):
+            return jsonify({"error": "Authorization failed"}), 403
+        
+        from_date = datetime.now() - timedelta(days=7)
+        to_date = datetime.now()
+        deals = mt5.history_deals_get(from_date, to_date)
+        
+        if deals is None:
+            return jsonify([])
+
+        deals_list = []
+        for deal in deals:
+            if deal.entry == 1:
+                deal_dict = {
+                    "ticket": deal.ticket,
+                    "order": deal.order,
+                    "symbol": deal.symbol,
+                    "type": "BUY" if deal.type == 0 else "SELL",
+                    "volume": deal.volume,
+                    "price": deal.price,
+                    "profit": deal.profit,
+                    "time": deal.time,
+                }
+                deals_list.append(deal_dict)
+        
+        deals_list.sort(key=lambda x: x['time'], reverse=True)
+        return jsonify(deals_list[:50])
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error: {e}"}), 500
+
 @app.route('/api/get_all_symbols', methods=['POST'])
 def get_all_symbols():
     if not ensure_mt5_initialized(): return jsonify({"error": "MetaTrader 5 terminal not found."}), 500
@@ -130,7 +203,6 @@ def get_latest_bar():
     except Exception as e: return jsonify({"error": "An unexpected server error."}), 500
 
 def _execute_trade_logic(credentials, symbol, lot_size, trade_type, sl, tp, analysis_data):
-    """Internal logic for placing a trade, callable by API and auto-trader."""
     login, password, server = int(credentials.get('login')), credentials.get('password'), credentials.get('server')
     if not mt5.login(login=login, password=password, server=server):
         raise ConnectionError("MT5 login failed during trade execution.")
@@ -219,7 +291,6 @@ def execute_trade():
         return jsonify({"error": f"An unexpected server error: {e}"}), 500
         
 def trading_loop():
-    """The main loop for the auto-trading background thread."""
     global AUTOTRADE_STATE
     params = AUTOTRADE_STATE['params']
     print(f"[{datetime.now()}] Auto-trading thread started for {params['symbol']} on {params['timeframe']}.")
@@ -232,7 +303,6 @@ def trading_loop():
                 time.sleep(60)
                 continue
             
-            # Fetch fresh data
             login, password, server = int(params['login']), params['password'], params['server']
             if not mt5.login(login=login, password=password, server=server):
                 print("Auto-trade: MT5 login failed. Retrying in 60s.")
@@ -250,7 +320,6 @@ def trading_loop():
             df = pd.DataFrame(chart_data)
             current_price = df.iloc[-1]['close']
             
-            # Run full analysis
             support, resistance, pivots = find_levels(df)
             demand, supply = find_sd_zones(df)
             bullish_ob, bearish_ob = find_order_blocks(df, pivots)
@@ -259,19 +328,18 @@ def trading_loop():
             analysis = {"symbol": params['symbol'], "support": support, "resistance": resistance, "demand_zones": demand, "supply_zones": supply, "bullish_ob": bullish_ob, "bearish_ob": bearish_ob}
             confidence = calculate_confidence(analysis, suggestion)
 
-            # Check if conditions are met to place a trade
             if suggestion['action'] != 'Neutral' and confidence >= float(params['confidence_threshold']):
                 print(f"[{datetime.now()}] High confidence setup found! Confidence: {confidence}%. Action: {suggestion['action']}. Placing trade...")
                 order_id = _execute_trade_logic(params, params['symbol'], float(params['lot_size']), suggestion['action'], suggestion['sl'], suggestion['tp'], analysis)
                 print(f"[{datetime.now()}] Trade placed successfully. Order ID: {order_id}. Cooling down for 1 hour.")
-                time.sleep(3600) # Cooldown for 1 hour after a trade
+                time.sleep(3600)
             else:
                 print("No high confidence setup found. Waiting for next cycle.")
 
         except Exception as e:
             print(f"[{datetime.now()}] Error in trading loop: {e}. Continuing...")
 
-        time.sleep(60) # Wait for 1 minute before the next check
+        time.sleep(60)
 
     print(f"[{datetime.now()}] Auto-trading thread stopped for {AUTOTRADE_STATE['params'].get('symbol')}.")
 
@@ -297,7 +365,6 @@ def stop_autotrade():
         return jsonify({"error": "Auto-trading is not running."}), 400
     
     AUTOTRADE_STATE['is_running'] = False
-    # No need to join the thread, it will stop on its next loop iteration
     return jsonify({"message": "Auto-trading stopping. It will cease after the current check."})
 
 
