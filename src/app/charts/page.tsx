@@ -18,11 +18,6 @@ const timeframes = {
   'Monthly': 'MN1'
 };
 
-const forexSymbols = [
-  'EURUSDm', 'GBPUSDm', 'USDJPYm', 'USDCHFm', 'AUDUSDm', 'USDCADm', 'NZUSDm',
-  'EURGBPm', 'EURJPYm', 'GBPJPYm',
-];
-
 interface Zone { high: number; low: number; time: Time; }
 interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
 interface AnalysisResult {
@@ -40,8 +35,9 @@ interface AnalysisResult {
 
 export default function ChartsPage() {
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
+  const [symbols, setSymbols] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeSymbol, setActiveSymbol] = useState('EURUSDm');
+  const [activeSymbol, setActiveSymbol] = useState('XAUUSDm'); // Default to Gold
   const [activeTimeframe, setActiveTimeframe] = useState('Daily');
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
@@ -52,6 +48,22 @@ export default function ChartsPage() {
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
+
+  // Fetch all symbols from the broker on component mount
+  useEffect(() => {
+    const storedCreds = localStorage.getItem('mt5_credentials');
+    if (storedCreds) {
+      const credentials = JSON.parse(storedCreds);
+      fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      })
+      .then(res => res.ok ? res.json() : Promise.reject('Could not fetch symbols'))
+      .then(data => setSymbols(data))
+      .catch(error => console.error("Failed to fetch symbols:", error));
+    }
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -177,7 +189,7 @@ export default function ChartsPage() {
         <div className="md:col-span-2">
           <div className="grid grid-cols-1 md:grid-cols-2 items-center mb-4 gap-4">
             <div className="w-full md:w-64">
-              <SymbolSearch symbols={forexSymbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
+              <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
             </div>
             <div className="flex justify-end">
               <div className="relative" ref={timeframeDropdownRef}>

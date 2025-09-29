@@ -39,6 +39,31 @@ def format_bar_data(bar, timeframe_str):
         
     return {"time": time_data, "open": bar['open'], "high": bar['high'], "low": bar['low'], "close": bar['close']}
 
+@app.route('/api/get_all_symbols', methods=['POST'])
+def get_all_symbols():
+    try:
+        credentials = request.get_json()
+        login = int(credentials.get('login'))
+        password = credentials.get('password')
+        server = credentials.get('server')
+
+        if not all([login, password, server]):
+            return jsonify({"error": "Missing credentials"}), 400
+
+        if not mt5.login(login=login, password=password, server=server):
+            return jsonify({"error": "Authorization failed", "mt5_error": mt5.last_error()}), 403
+
+        symbols = mt5.symbols_get()
+        if symbols is None:
+            return jsonify({"error": "Could not get symbols", "mt5_error": mt5.last_error()}), 500
+        
+        # We only want to show symbols that are visible in MarketWatch
+        symbol_names = [s.name for s in symbols if s.visible]
+        return jsonify(symbol_names)
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
+
+
 @app.route('/api/get_chart_data', methods=['POST'])
 def get_chart_data():
     try:
