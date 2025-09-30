@@ -6,6 +6,8 @@ import { CandlestickData } from "@/lib/alphaVantage";
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { ISeriesApi, Time } from "lightweight-charts";
 import { useAlert } from '@/context/AlertContext';
+import { io, Socket } from "socket.io-client";
+
 
 const timeframes = {
   'M1': 'M1',
@@ -39,7 +41,7 @@ interface AnalysisResult {
 
 export default function ChartsPage() {
   const { showAlert } = useAlert();
-  
+
   // Chart and Data State
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -47,6 +49,8 @@ export default function ChartsPage() {
   const [activeSymbol, setActiveSymbol] = useState('XAUUSDm');
   const [activeTimeframe, setActiveTimeframe] = useState('Daily');
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+
 
   // UI State
   const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
@@ -61,7 +65,6 @@ export default function ChartsPage() {
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
-  const [isTraining, setIsTraining] = useState(false);
 
   // Auto-Trading State
   const [isAutoTrading, setIsAutoTrading] = useState(false);
@@ -139,6 +142,38 @@ export default function ChartsPage() {
   }, [isConnected, fetchChartData]);
 
   useEffect(() => {
+    if (isConnected) {
+        socketRef.current = io('http://127.0.0.1:5000');
+
+        socketRef.current.on('connect', () => {
+            console.log('Socket connected!');
+            const storedCreds = localStorage.getItem('mt5_credentials');
+            if (storedCreds) {
+                socketRef.current?.emit('subscribe_to_chart', {
+                    symbol: activeSymbol,
+                    timeframe: timeframes[activeTimeframe as keyof typeof timeframes],
+                    credentials: JSON.parse(storedCreds)
+                });
+            }
+        });
+
+        socketRef.current.on('new_bar', (bar: CandlestickData) => {
+            if (seriesRef.current) {
+                seriesRef.current.update(bar);
+            }
+        });
+        
+        socketRef.current.on('training_complete', (data) => {
+            showAlert(data.message, 'success');
+        });
+
+        return () => {
+            socketRef.current?.disconnect();
+        };
+    }
+  }, [isConnected, activeSymbol, activeTimeframe, showAlert]);
+
+  useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
         setIsTimeframeOpen(false);
@@ -147,25 +182,6 @@ export default function ChartsPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  useEffect(() => {
-    if (!seriesRef.current || chartData.length === 0 || !isConnected) return;
-    const interval = setInterval(() => {
-      const storedCreds = localStorage.getItem('mt5_credentials');
-      if (!storedCreds) return;
-      const credentials = JSON.parse(storedCreds);
-      const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
-      fetch('http://127.0.0.1:5000/api/get_latest_bar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
-      })
-      .then(res => res.ok ? res.json() : null)
-      .then(latestBar => { if (latestBar && seriesRef.current) seriesRef.current.update(latestBar); })
-      .catch(error => console.error("Polling error:", error));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [chartData, activeSymbol, activeTimeframe, isConnected]);
 
   useEffect(() => {
     if (analysisResult && analysisResult.suggestion && analysisResult.suggestion.action !== 'Neutral') {
@@ -192,7 +208,7 @@ export default function ChartsPage() {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Failed to connect.');
-        
+
         localStorage.setItem('mt5_credentials', JSON.stringify(credentials));
         setSymbols(result);
         setIsConnected(true);
@@ -270,7 +286,7 @@ export default function ChartsPage() {
       setIsTrading(false);
     }
   };
-  
+
   const handleToggleAutoTrade = async () => {
     setIsTogglingAutoTrade(true);
     const storedCreds = localStorage.getItem('mt5_credentials');
@@ -297,7 +313,7 @@ export default function ChartsPage() {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Failed to toggle auto-trade.');
-        
+
         setIsAutoTrading(!isAutoTrading);
         showAlert(result.message, 'success');
         if (!isAutoTrading) setIsAutoTradeModalOpen(false);
@@ -306,20 +322,6 @@ export default function ChartsPage() {
         showAlert(`Error: ${error.message}`, 'error');
     } finally {
         setIsTogglingAutoTrade(false);
-    }
-  };
-
-  const handleTrainModel = async () => {
-    setIsTraining(true);
-    try {
-      const response = await fetch('http://127.0.0.1:5000/api/train');
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Failed to train model.');
-      showAlert(result.message || 'Training completed!', 'success');
-    } catch (error: any) {
-      showAlert(`Training failed: ${error.message}`, 'error');
-    } finally {
-      setIsTraining(false);
     }
   };
 
@@ -439,11 +441,8 @@ export default function ChartsPage() {
         <div className="md:col-span-1 bg-secondary rounded-xl p-4 min-h-[600px] flex flex-col shadow-lg">
           <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
             <div className="flex gap-2 mb-4">
-                <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading || !isConnected} className="flex-1 px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
+                <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading || !isConnected} className="w-full px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
                   {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-                </button>
-                <button onClick={handleTrainModel} disabled={isTraining || !isConnected} className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-md text-white font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
-                  {isTraining ? 'Training...' : 'Train AI'}
                 </button>
             </div>
           <div className="mt-4 flex-grow overflow-y-auto">
