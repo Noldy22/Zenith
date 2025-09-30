@@ -15,11 +15,20 @@ from learning import get_model_and_vectorizer, train_and_save_model, extract_fea
 app = Flask(__name__)
 CORS(app)
 
-# --- Global State for Auto-Trading ---
+# --- Global State ---
+# For Auto-Trading
 AUTOTRADE_STATE = {
     'is_running': False,
     'thread': None,
     'params': {}
+}
+
+# NEW: For storing the last successful login credentials for the background monitor
+LATEST_CREDENTIALS = {
+    'login': None,
+    'password': None,
+    'server': None,
+    'lock': threading.Lock()
 }
 
 # --- Database Setup ---
@@ -61,6 +70,69 @@ def format_bar_data(bar, timeframe_str):
         time_data = {"year": dt_object.year, "month": dt_object.month, "day": dt_object.day}
     return {"time": time_data, "open": bar['open'], "high": bar['high'], "low": bar['low'], "close": bar['close']}
 
+# --- NEW: Background Trade Monitor Functions ---
+def update_trade_outcomes(credentials):
+    """Checks for closed trades and updates their outcomes in the database."""
+    if not credentials or not credentials.get('login'):
+        print("Monitor: No credentials available to check trades.")
+        return
+
+    if not ensure_mt5_initialized():
+        print("Monitor: MT5 initialization failed.")
+        return
+
+    login = int(credentials.get('login'))
+    password = credentials.get('password')
+    server = credentials.get('server')
+
+    if not mt5.login(login=login, password=password, server=server):
+        print("Monitor: MT5 login failed.")
+        return
+
+    from_date = datetime.now() - timedelta(days=30)
+    history_orders = mt5.history_deals_get(from_date, datetime.now())
+
+    if history_orders is None:
+        print("Monitor: No history deals found, error code =", mt5.last_error())
+        mt5.shutdown()
+        return
+
+    conn = sqlite3.connect('trades.db')
+    cursor = conn.cursor()
+
+    for order in history_orders:
+        if order.magic == 234000 and order.entry == 1:  # Zenith trade, exit deal
+            cursor.execute("SELECT id FROM trades WHERE order_id = ? AND outcome = -1", (order.order,))
+            trade_to_update = cursor.fetchone()
+
+            if trade_to_update:
+                outcome = 1 if order.profit >= 0 else 0 # 1 for win/breakeven, 0 for loss
+                cursor.execute("UPDATE trades SET outcome = ? WHERE id = ?", (outcome, trade_to_update[0]))
+                print(f"Monitor: Updated outcome for order {order.order} to {outcome}")
+
+    conn.commit()
+    conn.close()
+    mt5.shutdown()
+    print("Monitor: Trade check complete.")
+
+def run_trade_monitor():
+    """The main loop for the background thread."""
+    while True:
+        with LATEST_CREDENTIALS['lock']:
+            creds = LATEST_CREDENTIALS.copy()
+        
+        if creds.get('login'):
+            print(f"[{datetime.now()}] Running trade outcome monitor...")
+            try:
+                update_trade_outcomes(creds)
+            except Exception as e:
+                print(f"[{datetime.now()}] Error in trade monitor: {e}")
+        else:
+            print(f"[{datetime.now()}] Trade monitor is idle, waiting for login.")
+
+        time.sleep(300) # Sleep for 5 minutes
+
+# --- Flask API Routes (Unchanged from original) ---
 @app.route('/api/get_account_info', methods=['POST'])
 def get_account_info():
     if not ensure_mt5_initialized():
@@ -168,6 +240,16 @@ def get_all_symbols():
         login, password, server = int(credentials.get('login')), credentials.get('password'), credentials.get('server')
         if not all([login, password, server]): return jsonify({"error": "Missing credentials"}), 400
         if not mt5.login(login=login, password=password, server=server): return jsonify({"error": "Authorization failed"}), 403
+        
+        # --- MODIFIED PART ---
+        # On successful login, update the global credentials for the monitor
+        with LATEST_CREDENTIALS['lock']:
+            LATEST_CREDENTIALS['login'] = login
+            LATEST_CREDENTIALS['password'] = password
+            LATEST_CREDENTIALS['server'] = server
+            print("Updated global credentials for trade monitor.")
+        # --- END OF MODIFIED PART ---
+
         symbols = [s.name for s in mt5.symbols_get() if s.visible]
         return jsonify(symbols)
     except Exception as e: return jsonify({"error": f"An unexpected server error: {e}"}), 500
@@ -378,13 +460,23 @@ def train_model_endpoint():
         conn = sqlite3.connect('trades.db')
         df = pd.read_sql_query("SELECT * from trades WHERE outcome != -1", conn)
         conn.close()
+        
         if df.empty: return jsonify({"message": "No completed trades to train on."}), 200
+        
+        # Convert analysis_json string back to dict before passing to training
+        df['analysis_json'] = df['analysis_json'].apply(json.loads)
+        
         result = train_and_save_model(df.to_dict('records'))
         return jsonify(result)
     except Exception as e:
         print(f"Training Error: {e}")
-        return jsonify({"error": "Error during model training."}), 500
+        return jsonify({"error": "An error occurred during model training."}), 500
 
+# --- NEW: Main execution block ---
 if __name__ == '__main__':
     init_db()
+    # Start the background thread for monitoring trade outcomes
+    monitor_thread = threading.Thread(target=run_trade_monitor, daemon=True)
+    monitor_thread.start()
+    # Run the Flask web server
     app.run(host='127.0.0.1', port=5000, debug=True)
