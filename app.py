@@ -10,7 +10,12 @@ import threading
 import time
 
 # --- AI Learning Imports ---
-from analysis import find_levels, find_sd_zones, find_order_blocks, find_candlestick_patterns, get_trade_suggestion, calculate_confidence, generate_market_narrative
+# Make sure your analysis.py has the new functions: determine_market_structure, find_fvgs
+from analysis import (
+    find_levels, find_sd_zones, find_order_blocks, find_candlestick_patterns,
+    get_trade_suggestion, calculate_confidence, generate_market_narrative,
+    determine_market_structure, find_fvgs
+)
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features
 
 app = Flask(__name__)
@@ -317,41 +322,41 @@ def _execute_trade_logic(credentials, symbol, lot_size, trade_type, sl, tp, anal
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_chart():
-    # This function does not require MT5 connection, so it remains unchanged
+    # **UPDATED SECTION**: This now uses the new, more advanced analysis logic.
     try:
         request_data = request.get_json()
         chart_data, symbol = request_data.get('chartData'), request_data.get('symbol', 'the asset')
         if not chart_data or len(chart_data) < 20: return jsonify({"error": "Not enough data for analysis"}), 400
         
         df = pd.DataFrame(chart_data)
-        support_levels, resistance_levels, pivots = find_levels(df)
-        demand_zones, supply_zones = find_sd_zones(df)
-        bullish_ob, bearish_ob = find_order_blocks(df, pivots)
-        candlestick_patterns = find_candlestick_patterns(df)
-        current_price = df.iloc[-1]['close']
-        suggestion = get_trade_suggestion(current_price, demand_zones, supply_zones, candlestick_patterns)
-
-        analysis_result = {
-            "symbol": symbol, "support": support_levels, "resistance": resistance_levels,
-            "demand_zones": demand_zones, "supply_zones": supply_zones,
-            "bullish_ob": bullish_ob, "bearish_ob": bearish_ob, 
-            "candlestick_patterns": candlestick_patterns,
-            "suggestion": suggestion,
-            "precautions": ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."]
-        }
         
-        analysis_result["confidence"] = calculate_confidence(analysis_result, suggestion)
-        analysis_result["narrative"] = generate_market_narrative(current_price, analysis_result)
+        # Build the full analysis dictionary step-by-step
+        analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
+        analysis["support"], analysis["resistance"], pivots = find_levels(df)
+        analysis["market_structure"] = determine_market_structure(pivots)
+        analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
+        analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
+        analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
+        analysis["candlestick_patterns"] = find_candlestick_patterns(df)
+        
+        # Get suggestion based on the complete analysis
+        suggestion = get_trade_suggestion(analysis)
+        analysis["suggestion"] = suggestion
+        
+        # Calculate confidence and generate narrative
+        analysis["confidence"] = calculate_confidence(analysis, suggestion)
+        analysis["narrative"] = generate_market_narrative(analysis)
+        analysis["precautions"] = ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."]
         
         model, vectorizer = get_model_and_vectorizer()
         if model and vectorizer:
-            features = extract_features(analysis_result)
+            features = extract_features(analysis)
             vectorized_features = vectorizer.transform([features])
-            analysis_result["predicted_success_rate"] = f"{model.predict_proba(vectorized_features)[0][1]:.0%}"
+            analysis["predicted_success_rate"] = f"{model.predict_proba(vectorized_features)[0][1]:.0%}"
         else:
-            analysis_result["predicted_success_rate"] = "N/A (Model not trained)"
+            analysis["predicted_success_rate"] = "N/A (Model not trained)"
         
-        return jsonify(analysis_result)
+        return jsonify(analysis)
     except Exception as e:
         print(f"Analysis Error: {e}")
         return jsonify({"error": "Error during analysis."}), 500
@@ -404,15 +409,17 @@ def trading_loop():
             
             chart_data = [format_bar_data(bar, params['timeframe']) for bar in rates]
             df = pd.DataFrame(chart_data)
-            current_price = df.iloc[-1]['close']
+
+            # **UPDATED SECTION**: The auto-trader now uses the new analysis logic.
+            analysis = {"symbol": params['symbol'], "current_price": df.iloc[-1]['close']}
+            analysis["support"], analysis["resistance"], pivots = find_levels(df)
+            analysis["market_structure"] = determine_market_structure(pivots)
+            analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
+            analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
+            analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
+            analysis["candlestick_patterns"] = find_candlestick_patterns(df)
             
-            support, resistance, pivots = find_levels(df)
-            demand, supply = find_sd_zones(df)
-            bullish_ob, bearish_ob = find_order_blocks(df, pivots)
-            candlestick_patterns = find_candlestick_patterns(df)
-            suggestion = get_trade_suggestion(current_price, demand, supply, candlestick_patterns)
-            
-            analysis = {"symbol": params['symbol'], "support": support, "resistance": resistance, "demand_zones": demand, "supply_zones": supply, "bullish_ob": bullish_ob, "bearish_ob": bearish_ob, "candlestick_patterns": candlestick_patterns}
+            suggestion = get_trade_suggestion(analysis)
             confidence = calculate_confidence(analysis, suggestion)
 
             if suggestion['action'] != 'Neutral' and confidence >= float(params['confidence_threshold']):

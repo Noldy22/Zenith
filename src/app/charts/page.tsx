@@ -23,11 +23,23 @@ const brokerPaths = {
 interface Zone { high: number; low: number; time: Time; }
 interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
 interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
+// **UPDATED**: Narrative is now a structured object
+interface Narrative {
+  overview: string;
+  structure_title: string;
+  structure_body: string;
+  levels_title: string;
+  levels_body: string[];
+  prediction_title: string;
+  prediction_body: string;
+}
 interface AnalysisResult {
   support: number[]; resistance: number[]; demand_zones: Zone[];
   supply_zones: Zone[]; bullish_ob: Zone[]; bearish_ob: Zone[];
+  bullish_fvg: Zone[]; bearish_fvg: Zone[]; // Added FVGs
   candlestick_patterns: CandlestickPattern[]; suggestion: Suggestion;
-  narrative: string; confidence: number; precautions: string[];
+  narrative: Narrative; // Updated type
+  confidence: number; precautions: string[];
   predicted_success_rate?: string;
 }
 
@@ -122,7 +134,6 @@ export default function ChartsPage() {
                     setSymbols(newSymbols);
                     setIsConnected(true);
                     
-                    // *** FIX: Check and update symbol on initial load ***
                     if (!newSymbols.includes(activeSymbol)) {
                         const defaultSymbol = newSymbols.find((s: string) => s.toUpperCase() === 'EURUSD') || newSymbols[0];
                         if (defaultSymbol) {
@@ -219,7 +230,6 @@ export default function ChartsPage() {
         setIsConnectModalOpen(false);
         showAlert('Successfully connected to MT5!', 'success');
 
-        // *** FIX: Check and update symbol after connecting ***
         if (!newSymbols.includes(activeSymbol)) {
             const defaultSymbol = newSymbols.find(s => s.toUpperCase() === 'EURUSD') || newSymbols[0];
             if (defaultSymbol) {
@@ -458,9 +468,23 @@ export default function ChartsPage() {
                         <h3 className="font-bold text-lg text-yellow-300">AI Suggestion</h3>
                         <p className="text-gray-300">{analysisResult.suggestion.reason}</p>
                     </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-blue-300">Market Narrative</h3>
-                        <p className="text-gray-400 italic">{analysisResult.narrative}</p>
+                    {/* **UPDATED NARRATIVE DISPLAY** */}
+                    <div className="space-y-3">
+                        <h3 className="font-bold text-lg text-blue-300">{analysisResult.narrative.overview}</h3>
+                        <div>
+                            <p className="font-semibold text-gray-200">{analysisResult.narrative.structure_title}</p>
+                            <p className="text-gray-400 italic">{analysisResult.narrative.structure_body}</p>
+                        </div>
+                        <div>
+                            <p className="font-semibold text-gray-200">{analysisResult.narrative.levels_title}</p>
+                            <ul className="list-disc list-inside text-gray-400 italic">
+                                {analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
+                            </ul>
+                        </div>
+                        <div>
+                            <p className="font-semibold text-gray-200">{analysisResult.narrative.prediction_title}</p>
+                            <p className="text-gray-400 italic">{analysisResult.narrative.prediction_body}</p>
+                        </div>
                     </div>
                     <div>
                         <h3 className="font-bold text-lg text-gray-300 mt-3">Precautions</h3>
