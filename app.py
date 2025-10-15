@@ -21,7 +21,7 @@ from backtest import run_backtest
 
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # --- Global State & Configuration ---
 class AppState:
@@ -309,5 +309,5 @@ if __name__ == '__main__':
         STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
         STATE.autotrade_thread.start()
 
-    # Use async_mode='threading' to be compatible with standard threading library
-    socketio.run(app, host='127.0.0.1', port=5000, async_mode='threading')
+    # The async_mode is now set in the constructor
+    socketio.run(app, host='127.0.0.1', port=5000)
