@@ -5,7 +5,7 @@ def run(playwright):
     context = browser.new_context()
     page = context.new_page()
     page.goto("http://localhost:3000/charts")
-    page.wait_for_selector("text=Trading Chart")
+    page.wait_for_selector("text=Trading Chart for EURUSD")
     page.screenshot(path="jules-scratch/verification/charts_verification.png")
     browser.close()
 

@@ -50,8 +50,8 @@ export default function ChartsPage() {
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [activeSymbol, setActiveSymbol] = useState('XAUUSDm');
-  const [activeTimeframe, setActiveTimeframe] = useState('Daily');
+  const [activeSymbol, setActiveSymbol] = useState('EURUSD');
+  const [activeTimeframe, setActiveTimeframe] = useState('1H');
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
