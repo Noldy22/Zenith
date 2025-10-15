@@ -455,11 +455,19 @@ export default function ChartsPage() {
               <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
             ) : chartData.length > 0 ? (
               <TradingChart
-                data={chartData} onChartReady={handleChartReady}
-                supportLevels={analysisResult?.support} resistanceLevels={analysisResult?.resistance}
-                demandZones={analysisResult?.demand_zones} supplyZones={analysisResult?.supply_zones}
-                bullishOBs={analysisResult?.bullish_ob} bearishOBs={analysisResult?.bearish_ob}
-                candlestickPatterns={analysisResult?.candlestick_patterns} suggestion={analysisResult?.suggestion}
+                data={chartData}
+                onChartReady={handleChartReady}
+                supportLevels={analysisResult?.support}
+                resistanceLevels={analysisResult?.resistance}
+                demandZones={analysisResult?.demand_zones}
+                supplyZones={analysisResult?.supply_zones}
+                bullishOBs={analysisResult?.bullish_ob}
+                bearishOBs={analysisResult?.bearish_ob}
+                bullishFVGs={analysisResult?.bullish_fvg}
+                bearishFVGs={analysisResult?.bearish_fvg}
+                buySideLiquidity={analysisResult?.buy_side_liquidity}
+                sellSideLiquidity={analysisResult?.sell_side_liquidity}
+                suggestion={analysisResult?.suggestion}
               />
             ) : (
               <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>

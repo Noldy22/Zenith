@@ -33,10 +33,19 @@ export const TradingChart = (props: {
     supplyZones?: Zone[];
     bullishOBs?: Zone[];
     bearishOBs?: Zone[];
+    bullishFVGs?: Zone[];
+    bearishFVGs?: Zone[];
+    buySideLiquidity?: number[];
+    sellSideLiquidity?: number[];
     suggestion?: Suggestion;
     candlestickPatterns?: CandlestickPattern[];
 }) => {
-    const { data, onChartReady, supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion, candlestickPatterns } = props;
+    const {
+        data, onChartReady, supportLevels, resistanceLevels,
+        demandZones, supplyZones, bullishOBs, bearishOBs,
+        bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity,
+        suggestion, candlestickPatterns
+    } = props;
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
@@ -148,6 +157,12 @@ export const TradingChart = (props: {
             supplyZones?.forEach(z => drawZoneWithLabel(z, '#ef5350', 'Supply', 0.2));
             bullishOBs?.forEach(z => drawZoneWithLabel(z, '#00BFFF', 'Bullish OB', 0.35));
             bearishOBs?.forEach(z => drawZoneWithLabel(z, '#FF69B4', 'Bearish OB', 0.35));
+            bullishFVGs?.forEach(z => drawZoneWithLabel(z, '#8A2BE2', 'Bullish FVG', 0.25));
+            bearishFVGs?.forEach(z => drawZoneWithLabel(z, '#FF1493', 'Bearish FVG', 0.25));
+
+            buySideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#32CD32', lineWidth: 1, lineStyle: LineStyle.Solid, title: 'BSL' })));
+            sellSideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#FF4500', lineWidth: 1, lineStyle: LineStyle.Solid, title: 'SSL' })));
+
             if(suggestion) drawSuggestionTool(suggestion);
         };
 
@@ -173,7 +188,7 @@ export const TradingChart = (props: {
             resizeObserver.current?.disconnect();
         };
 
-    }, [supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, suggestion, candlestickPatterns, data]);
+    }, [supportLevels, resistanceLevels, demandZones, supplyZones, bullishOBs, bearishOBs, bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity, suggestion, candlestickPatterns, data]);
 
     return (
         <div ref={chartContainerRef} className="w-full h-full relative">
