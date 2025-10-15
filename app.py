@@ -300,19 +300,14 @@ def handle_backtest():
     return jsonify(results)
 
 if __name__ == '__main__':
-    print("[DEBUG] Script starting...")
     init_db()
-    print("[DEBUG] Database initialized.")
     STATE.load_settings()
-    print("[DEBUG] Settings loaded.")
 
     # Directly start the background thread without calling the view function
     if not STATE.autotrade_running:
         STATE.autotrade_running = True
         STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
         STATE.autotrade_thread.start()
-        print("[DEBUG] Auto-trading thread created and started.")
 
-    print("[DEBUG] Starting Flask-SocketIO server...")
-    socketio.run(app, host='127.0.0.1', port=5000, debug=False)
-    print("[DEBUG] This message will not be printed because socketio.run() blocks.")
+    # Use async_mode='threading' to be compatible with standard threading library
+    socketio.run(app, host='127.0.0.1', port=5000, async_mode='threading')
