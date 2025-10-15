@@ -99,7 +99,7 @@ def _run_full_analysis(symbol, credentials, style):
         rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200)
         if rates is None or len(rates) < 20: continue
         df = pd.DataFrame([format_bar_data(r, tf) for r in rates])
-        
+
         analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
         _, _, pivots = find_levels(df)
         analysis["market_structure"] = determine_market_structure(pivots)
@@ -162,7 +162,7 @@ def trading_loop():
     while STATE.autotrade_running:
         with STATE.lock:
             settings = STATE.settings.copy()
-        
+
         if not settings['auto_trading_enabled']:
             time.sleep(10)
             continue
@@ -286,6 +286,30 @@ def get_all_symbols():
     symbols = [s.name for s in mt5.symbols_get() if s.visible]
     mt5.shutdown()
     return jsonify(symbols)
+
+@app.route('/api/get_chart_data', methods=['POST'])
+def get_chart_data():
+    try:
+        creds = request.get_json()
+        symbol = creds.get('symbol')
+        timeframe_str = creds.get('timeframe')
+        mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
+
+        if not ensure_mt5_initialized(path=creds.get('terminal_path')):
+            return jsonify({"error": "MT5 terminal not found."}), 500
+        if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']):
+            return jsonify({"error": "Authorization failed"}), 403
+
+        rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
+        mt5.shutdown()
+
+        if rates is None:
+            return jsonify({"error": f"Could not get rates for {symbol}"}), 500
+
+        chart_data = [format_bar_data(bar, timeframe_str) for bar in rates]
+        return jsonify(chart_data)
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
 @app.route('/api/run_backtest', methods=['POST'])
 def handle_backtest():
