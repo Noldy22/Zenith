@@ -79,7 +79,10 @@ def determine_market_structure(pivots, lookback=10):
     return 'Ranging', "The market is consolidating with no clear directional bias from recent swing points."
 
 def find_sd_zones(data, lookback=50, threshold_multiplier=1.5):
-    """Finds and clusters Supply and Demand zones."""
+    """
+    Finds, clusters, and checks the mitigation status of Supply and Demand zones.
+    Prioritizes fresh (unmitigated) zones.
+    """
     df = pd.DataFrame(data)
     df['range'] = df['high'] - df['low']
     avg_range = df['range'].tail(lookback).mean()
@@ -94,31 +97,74 @@ def find_sd_zones(data, lookback=50, threshold_multiplier=1.5):
         is_explosive = explosive_candle['range'] > avg_range * threshold_multiplier
 
         if is_base and is_explosive:
-            zone_data = {'high': base_candle['high'], 'low': base_candle['low'], 'time': base_candle['time']}
-            if explosive_candle['close'] > explosive_candle['open']:
-                demand_zones.append(zone_data)
-            elif explosive_candle['close'] < explosive_candle['open']:
-                supply_zones.append(zone_data)
+            zone_data = {'high': base_candle['high'], 'low': base_candle['low'], 'time': base_candle['time'], 'mitigated': False}
 
-    # Merge overlapping/close zones and return the most recent 2 of each
+            # Check for mitigation
+            for k in range(i + 2, len(df)):
+                if explosive_candle['close'] > explosive_candle['open']: # Demand
+                    if df.iloc[k]['low'] <= zone_data['high']:
+                        zone_data['mitigated'] = True
+                        break
+                else: # Supply
+                    if df.iloc[k]['high'] >= zone_data['low']:
+                        zone_data['mitigated'] = True
+                        break
+
+            if not zone_data['mitigated']:
+                if explosive_candle['close'] > explosive_candle['open']:
+                    demand_zones.append(zone_data)
+                else:
+                    supply_zones.append(zone_data)
+
     clustered_demand = _merge_zones(demand_zones)[-2:]
     clustered_supply = _merge_zones(supply_zones)[-2:]
-    
+
     return clustered_demand, clustered_supply
 
-def find_liquidity_pools(pivots, lookback=20, tolerance=0.001):
-    """Identifies liquidity pools from recent swing highs and lows."""
-    swing_highs = [p for p in pivots if p['type'] == 'high'][-lookback:]
-    swing_lows = [p for p in pivots if p['type'] == 'low'][-lookback:]
+def find_liquidity_pools(pivots, lookback=30, tolerance_percent=0.05):
+    """
+    Identifies liquidity pools by finding clusters of "equal" highs and lows.
+    These are areas where price has touched a similar level multiple times.
+    """
+    swing_highs = sorted([p['price'] for p in pivots if p['type'] == 'high'], reverse=True)
+    swing_lows = sorted([p['price'] for p in pivots if p['type'] == 'low'])
+
+    buy_side_pools, sell_side_pools = [], []
     
-    buy_side_liquidity = [p['price'] for p in swing_highs]
-    sell_side_liquidity = [p['price'] for p in swing_lows]
-    
-    # Optional: Look for "equal" highs/lows for stronger pools
-    # This is a simplified example; a more complex one would check for multiple highs/lows at similar levels.
-    
-    return sorted(list(set(buy_side_liquidity)), reverse=True), \
-           sorted(list(set(sell_side_liquidity)))
+    # Find Buy-Side Liquidity Pools (Equal Highs)
+    if len(swing_highs) > 1:
+        # Group highs that are close to each other
+        groups = []
+        current_group = [swing_highs[0]]
+        for i in range(1, len(swing_highs)):
+            tolerance = swing_highs[i] * (tolerance_percent / 100)
+            if abs(swing_highs[i] - current_group[-1]) <= tolerance:
+                current_group.append(swing_highs[i])
+            else:
+                if len(current_group) > 1:
+                    groups.append(np.mean(current_group))
+                current_group = [swing_highs[i]]
+        if len(current_group) > 1:
+            groups.append(np.mean(current_group))
+        buy_side_pools = groups
+
+    # Find Sell-Side Liquidity Pools (Equal Lows)
+    if len(swing_lows) > 1:
+        groups = []
+        current_group = [swing_lows[0]]
+        for i in range(1, len(swing_lows)):
+            tolerance = swing_lows[i] * (tolerance_percent / 100)
+            if abs(swing_lows[i] - current_group[-1]) <= tolerance:
+                current_group.append(swing_lows[i])
+            else:
+                if len(current_group) > 1:
+                    groups.append(np.mean(current_group))
+                current_group = [swing_lows[i]]
+        if len(current_group) > 1:
+            groups.append(np.mean(current_group))
+        sell_side_pools = groups
+
+    return buy_side_pools, sell_side_pools
 
 def find_fvgs(data):
     """Identifies unmitigated Fair Value Gaps (FVGs)."""
@@ -127,7 +173,7 @@ def find_fvgs(data):
 
     for i in range(2, len(df)):
         c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
-        
+
         # Bullish FVG (gap between c1 high and c3 low)
         if c1['high'] < c3['low']:
             fvg_zone = {'high': c3['low'], 'low': c1['high'], 'time': c2['time'], 'mitigated': False}
@@ -138,7 +184,7 @@ def find_fvgs(data):
                     break
             if not fvg_zone['mitigated']:
                 bullish_fvg.append(fvg_zone)
-            
+
         # Bearish FVG (gap between c1 low and c3 high)
         if c1['low'] > c3['high']:
             fvg_zone = {'high': c1['low'], 'low': c3['high'], 'time': c2['time'], 'mitigated': False}
@@ -153,45 +199,83 @@ def find_fvgs(data):
     return bullish_fvg[-2:], bearish_fvg[-2:]
 
 def find_order_blocks(data, pivots):
-    """Identifies order blocks confirmed by a displacement (strong move creating an FVG)."""
+    """
+    Identifies high-probability order blocks.
+    A high-probability OB has:
+    1. A liquidity sweep of a prior swing high/low.
+    2. A displacement (strong move) that causes a Break of Structure (BOS).
+    3. An FVG created by the displacement.
+    4. Has not yet been mitigated.
+    """
     df = pd.DataFrame(data)
-    bullish_ob, bearish_ob = [], []
+    bullish_obs, bearish_obs = [], []
 
     swing_highs = [p for p in pivots if p['type'] == 'high']
     swing_lows = [p for p in pivots if p['type'] == 'low']
 
-    # Find Bearish OB
-    for i in range(len(swing_lows) - 1):
-        prev_low, current_low = swing_lows[i], swing_lows[i+1]
-        if current_low['price'] < prev_low['price']: # Break of Structure (BOS)
-            try:
-                high_point_index = df.iloc[prev_low['index']:current_low['index']]['high'].idxmax()
-                for j in range(high_point_index, prev_low['index'], -1):
-                    if df['close'].iloc[j] > df['open'].iloc[j]: # Find last up candle
-                        # Check for FVG creation after the OB
-                        if (j + 2) < len(df) and df['low'].iloc[j+2] > df['high'].iloc[j]:
-                            ob_candle = df.iloc[j]
-                            bearish_ob.append({'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time']})
-                            break
-            except ValueError: continue
+    # Find Bearish OBs
+    for i in range(1, len(swing_highs)):
+        # 1. Liquidity Sweep: Current high sweeps the previous high
+        if swing_highs[i]['price'] > swing_highs[i-1]['price']:
+            # 2. Break of Structure: A subsequent low breaks a previous low
+            subsequent_lows = [sl for sl in swing_lows if sl['index'] > swing_highs[i]['index']]
+            if not subsequent_lows: continue
 
-    # Find Bullish OB
-    for i in range(len(swing_highs) - 1):
-        prev_high, current_high = swing_highs[i], swing_highs[i+1]
-        if current_high['price'] > prev_high['price']: # BOS
-            try:
-                low_point_index = df.iloc[prev_high['index']:current_high['index']]['low'].idxmin()
-                for j in range(low_point_index, prev_high['index'], -1):
-                    if df['close'].iloc[j] < df['open'].iloc[j]: # Find last down candle
-                        # Check for FVG creation after the OB
-                        if (j + 2) < len(df) and df['high'].iloc[j+2] < df['low'].iloc[j]:
-                            ob_candle = df.iloc[j]
-                            bullish_ob.append({'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time']})
-                            break
-            except ValueError: continue
+            bos_happened = False
+            for sl in subsequent_lows:
+                if sl['price'] < swing_highs[i-1]['price']: # Simplified BOS condition
+                    bos_happened = True
+                    break
+            if not bos_happened: continue
 
-    return list({(z['high'], z['low']): z for z in reversed(bullish_ob)}.values())[-2:], \
-           list({(z['high'], z['low']): z for z in reversed(bearish_ob)}.values())[-2:]
+            # Find the OB candle (last up-candle before the sweep)
+            for j in range(swing_highs[i]['index'], swing_highs[i-1]['index'], -1):
+                if df.iloc[j]['close'] > df.iloc[j]['open']:
+                    ob_candle = df.iloc[j]
+                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time'], 'mitigated': False}
+
+                    # 4. Mitigation Check
+                    for k in range(swing_highs[i]['index'] + 1, len(df)):
+                        if df.iloc[k]['high'] >= ob_zone['low']:
+                            ob_zone['mitigated'] = True
+                            break
+
+                    if not ob_zone['mitigated']:
+                        bearish_obs.append(ob_zone)
+                    break
+
+    # Find Bullish OBs (logic is inverse of bearish)
+    for i in range(1, len(swing_lows)):
+        # 1. Liquidity Sweep
+        if swing_lows[i]['price'] < swing_lows[i-1]['price']:
+            # 2. Break of Structure
+            subsequent_highs = [sh for sh in swing_highs if sh['index'] > swing_lows[i]['index']]
+            if not subsequent_highs: continue
+
+            bos_happened = False
+            for sh in subsequent_highs:
+                if sh['price'] > swing_lows[i-1]['price']:
+                    bos_happened = True
+                    break
+            if not bos_happened: continue
+
+            # Find OB candle
+            for j in range(swing_lows[i]['index'], swing_lows[i-1]['index'], -1):
+                if df.iloc[j]['close'] < df.iloc[j]['open']:
+                    ob_candle = df.iloc[j]
+                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time'], 'mitigated': False}
+
+                    # 4. Mitigation Check
+                    for k in range(swing_lows[i]['index'] + 1, len(df)):
+                        if df.iloc[k]['low'] <= ob_zone['high']:
+                            ob_zone['mitigated'] = True
+                            break
+
+                    if not ob_zone['mitigated']:
+                        bullish_obs.append(ob_zone)
+                    break
+
+    return bullish_obs[-2:], bearish_obs[-2:]
 
 def find_candlestick_patterns(data):
     """Detects various candlestick patterns."""
