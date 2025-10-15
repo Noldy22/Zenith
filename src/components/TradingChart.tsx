@@ -98,77 +98,50 @@ export const TradingChart = (props: {
         const canvas = canvasRef.current;
         if (!chart || !series || !canvas) return;
 
+        // Clear previous drawings
         priceLinesRef.current.forEach(line => series.removePriceLine(line));
         priceLinesRef.current = [];
 
-        supportLevels?.forEach((l, i) => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#26a69a', lineWidth: 2, lineStyle: LineStyle.Dashed, title: `S${i + 1}` })));
-        resistanceLevels?.forEach((l, i) => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#ef5350', lineWidth: 2, lineStyle: LineStyle.Dashed, title: `R${i + 1}` })));
-
+        // --- Redesigned Drawing Logic ---
         const drawVisuals = () => {
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            const drawZoneWithLabel = (zone: Zone, color: string, label: string, transparency: number) => {
+            const chartWidth = chart.timeScale().width();
+
+            // Function to draw zones behind candles
+            const drawZone = (zone: Zone, color: string) => {
                 const yTop = series.priceToCoordinate(zone.high);
                 const yBottom = series.priceToCoordinate(zone.low);
                 let xStart = chart.timeScale().timeToCoordinate(zone.time);
-
                 if (yTop === null || yBottom === null) return;
-
-                // If the zone starts off-screen, clamp its drawing start position to the edge
                 const xStartVisible = xStart === null ? 0 : Math.max(xStart, 0);
 
-                const chartWidth = chart.timeScale().width();
-                ctx.globalAlpha = transparency;
                 ctx.fillStyle = color;
                 ctx.fillRect(xStartVisible, yTop, chartWidth - xStartVisible, yBottom - yTop);
-
-                ctx.globalAlpha = 1.0;
-                ctx.fillStyle = "#FFFFFF";
-                ctx.font = "12px sans-serif";
-                // Ensure the label is also drawn on-screen
-                ctx.fillText(label, xStartVisible + 5, yTop + 15);
             };
 
-            const drawSuggestionTool = (sugg: Suggestion) => {
-                if (sugg.action === 'Neutral' || !sugg.entry || !sugg.sl || !sugg.tp || data.length === 0) return;
+            // Draw zones with subtle, semi-transparent colors
+            ctx.globalAlpha = 0.15;
+            demandZones?.forEach(z => drawZone(z, '#26a69a')); // Green
+            supplyZones?.forEach(z => drawZone(z, '#ef5350')); // Red
+            bullishOBs?.forEach(z => drawZone(z, '#00BFFF')); // DeepSkyBlue
+            bearishOBs?.forEach(z => drawZone(z, '#FF69B4')); // HotPink
+            bullishFVGs?.forEach(z => drawZone(z, '#8A2BE2')); // BlueViolet
+            bearishFVGs?.forEach(z => drawZone(z, '#FF1493')); // DeepPink
+            ctx.globalAlpha = 1.0;
 
-                const entryY = series.priceToCoordinate(sugg.entry);
-                const slY = series.priceToCoordinate(sugg.sl);
-                const tpY = series.priceToCoordinate(sugg.tp);
-                if (entryY === null || slY === null || tpY === null) return;
+            // Draw liquidity pools as distinct lines
+            buySideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#32CD32', lineWidth: 1, lineStyle: LineStyle.Dotted, title: '$ BSL' })));
+            sellSideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#FF4500', lineWidth: 1, lineStyle: LineStyle.Dotted, title: '$ SSL' })));
 
-                const timeScale = chart.timeScale();
-                const logicalRange = timeScale.getVisibleLogicalRange();
-                if (!logicalRange) return;
-
-                const lastBar = data[data.length - 1];
-                const entryX = timeScale.timeToCoordinate(lastBar.time);
-                if (entryX === null) return;
-
-                const toolWidth = 100;
-
-                ctx.globalAlpha = 0.3;
-                ctx.fillStyle = '#ef5350';
-                ctx.fillRect(entryX, entryY, toolWidth, slY - entryY);
-
-                ctx.globalAlpha = 0.3;
-                ctx.fillStyle = '#26a69a';
-                ctx.fillRect(entryX, entryY, toolWidth, tpY - entryY);
+            // Draw trade suggestion lines
+            if (suggestion && suggestion.action !== 'Neutral' && suggestion.entry && suggestion.sl && suggestion.tp) {
+                priceLinesRef.current.push(series.createPriceLine({ price: suggestion.entry, color: '#FFFFFF', lineWidth: 2, lineStyle: LineStyle.Solid, title: 'Entry' }));
+                priceLinesRef.current.push(series.createPriceLine({ price: suggestion.sl, color: '#ef5350', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Stop Loss' }));
+                priceLinesRef.current.push(series.createPriceLine({ price: suggestion.tp, color: '#26a69a', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Take Profit' }));
             }
-            
-            demandZones?.forEach(z => drawZoneWithLabel(z, '#26a69a', 'Demand', 0.2));
-            supplyZones?.forEach(z => drawZoneWithLabel(z, '#ef5350', 'Supply', 0.2));
-            bullishOBs?.forEach(z => drawZoneWithLabel(z, '#00BFFF', 'Bullish OB', 0.35));
-            bearishOBs?.forEach(z => drawZoneWithLabel(z, '#FF69B4', 'Bearish OB', 0.35));
-            bullishFVGs?.forEach(z => drawZoneWithLabel(z, '#8A2BE2', 'Bullish FVG', 0.25));
-            bearishFVGs?.forEach(z => drawZoneWithLabel(z, '#FF1493', 'Bearish FVG', 0.25));
-
-            buySideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#32CD32', lineWidth: 1, lineStyle: LineStyle.Solid, title: 'BSL' })));
-            sellSideLiquidity?.forEach(l => priceLinesRef.current.push(series.createPriceLine({ price: l, color: '#FF4500', lineWidth: 1, lineStyle: LineStyle.Solid, title: 'SSL' })));
-
-            if(suggestion) drawSuggestionTool(suggestion);
         };
 
         drawVisuals();

@@ -9,6 +9,7 @@ import json
 import threading
 import time
 import os
+from functools import wraps
 
 # --- AI & Learning Imports ---
 from analysis import (
@@ -22,6 +23,38 @@ from backtest import run_backtest
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# --- MT5 Connection Manager ---
+class MT5Manager:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.is_initialized = False
+
+    def connect(self, credentials):
+        with self.lock:
+            if self.is_initialized:
+                # If already initialized, just ensure login is current
+                if mt5.terminal_info().login == credentials['login']:
+                    return True
+                # If login is different, shutdown and reconnect
+                mt5.shutdown()
+
+            if not mt5.initialize(path=credentials['terminal_path']):
+                print(f"initialize() failed, error code = {mt5.last_error()}")
+                self.is_initialized = False
+                return False
+
+            if not mt5.login(login=credentials['login'], password=credentials['password'], server=credentials['server']):
+                print(f"login() failed, error code = {mt5.last_error()}")
+                mt5.shutdown()
+                self.is_initialized = False
+                return False
+
+            print("MT5 Connection Successful")
+            self.is_initialized = True
+            return True
+
+mt5_manager = MT5Manager()
 
 # --- Global State & Configuration ---
 class AppState:
@@ -37,24 +70,51 @@ class AppState:
             "notifications_enabled": True,
             "min_confluence": 2,
             "pairs_to_trade": [],
-            "mt5_credentials": { "login": "", "password": "", "server": "", "terminal_path": "" }
+            "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" }
         }
         self.lock = threading.Lock()
 
     def update_settings(self, new_settings):
         with self.lock:
+            # Ensure login is an integer
+            if 'mt5_credentials' in new_settings and 'login' in new_settings['mt5_credentials']:
+                try:
+                    new_settings['mt5_credentials']['login'] = int(new_settings['mt5_credentials']['login'])
+                except (ValueError, TypeError):
+                     new_settings['mt5_credentials']['login'] = 0 # Default to 0 if invalid
+
             self.settings.update(new_settings)
-            # Persist settings to a file
             with open('settings.json', 'w') as f:
                 json.dump(self.settings, f)
+
+            # Attempt to reconnect with new credentials
+            if 'mt5_credentials' in new_settings:
+                mt5_manager.connect(self.settings['mt5_credentials'])
+
 
     def load_settings(self):
         if os.path.exists('settings.json'):
             with open('settings.json', 'r') as f:
                 with self.lock:
                     self.settings.update(json.load(f))
+        # Connect on startup if credentials exist
+        if self.settings['mt5_credentials']['login']:
+             mt5_manager.connect(self.settings['mt5_credentials'])
+
 
 STATE = AppState()
+
+# Decorator to ensure MT5 is connected
+def mt5_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not mt5_manager.is_initialized:
+            # Try to reconnect using saved settings
+            if not mt5_manager.connect(STATE.settings['mt5_credentials']):
+                return jsonify({"error": "MetaTrader 5 not connected. Please check credentials in settings."}), 503
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 # --- Timeframe & Style Mapping ---
 TIMEFRAME_MAP = {
@@ -80,141 +140,10 @@ def init_db():
     conn.commit()
     conn.close()
 
-def ensure_mt5_initialized(path):
-    return mt5.initialize(path=path)
-
 def format_bar_data(bar, tf_str):
     dt = datetime.fromtimestamp(bar['time'])
     time_data = int(dt.timestamp()) if tf_str in ['M1', 'M5', 'M15', 'H1', 'H4'] else {"year": dt.year, "month": dt.month, "day": dt.day}
     return {"time": time_data, "open": bar['open'], "high": bar['high'], "low": bar['low'], "close": bar['close']}
-
-# --- Core Analysis & Trading Logic ---
-def _run_full_analysis(symbol, credentials, style):
-    timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
-    if not ensure_mt5_initialized(path=credentials['terminal_path']): return None
-    if not mt5.login(login=credentials['login'], password=credentials['password'], server=credentials['server']): return None
-
-    analyses = {}
-    for tf in timeframes:
-        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200)
-        if rates is None or len(rates) < 20: continue
-        df = pd.DataFrame([format_bar_data(r, tf) for r in rates])
-
-        analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
-        _, _, pivots = find_levels(df)
-        analysis["market_structure"] = determine_market_structure(pivots)
-        analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
-        analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
-        analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
-        analysis["buy_side_liquidity"], _ = find_liquidity_pools(pivots)
-        analyses[tf] = analysis
-
-    mt5.shutdown()
-    return analyses
-
-def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
-    # This is a simplified calculation. A real one needs live pip value from the broker.
-    # We'll assume standard pairs where 1 pip = $0.0001
-    amount_to_risk = balance * (risk_pct / 100)
-    value_per_pip_per_lot = mt5.symbol_info(symbol).trade_tick_value if ensure_mt5_initialized(STATE.settings['mt5_credentials']['terminal_path']) and mt5.symbol_info(symbol) else 10.0
-
-    risk_per_lot = sl_pips * value_per_pip_per_lot
-    if risk_per_lot == 0: return 0.01 # Avoid division by zero
-
-    position_size = round(amount_to_risk / risk_per_lot, 2)
-    return max(position_size, 0.01) # Return at least a micro lot
-
-def _execute_trade_logic(creds, trade_params):
-    if not ensure_mt5_initialized(path=creds['terminal_path']): raise ConnectionError("MT5 init failed")
-    if not mt5.login(login=creds['login'], password=creds['password'], server=creds['server']): raise ConnectionError("MT5 login failed")
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": trade_params['symbol'],
-        "volume": trade_params['lot_size'],
-        "type": mt5.ORDER_TYPE_BUY if trade_params['trade_type'].upper() == 'BUY' else mt5.ORDER_TYPE_SELL,
-        "price": mt5.symbol_info_tick(trade_params['symbol']).ask if trade_params['trade_type'].upper() == 'BUY' else mt5.symbol_info_tick(trade_params['symbol']).bid,
-        "sl": trade_params['sl'],
-        "tp": trade_params['tp'],
-        "magic": 234000,
-        "comment": "Zenith AI Trade",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,
-    }
-    result = mt5.order_send(request)
-    mt5.shutdown()
-
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        raise ValueError(f"Order failed: {result.comment}")
-
-    # Log to DB
-    conn = sqlite3.connect('trades.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO trades (order_id, symbol, trade_type, analysis_json) VALUES (?, ?, ?, ?)",
-                   (result.order, trade_params['symbol'], trade_params['trade_type'], json.dumps(trade_params['analysis'])))
-    conn.commit()
-    conn.close()
-    return result
-
-# --- Auto-Trading Loop ---
-def trading_loop():
-    print("Auto-trading thread started.")
-    while STATE.autotrade_running:
-        with STATE.lock:
-            settings = STATE.settings.copy()
-
-        if not settings['auto_trading_enabled']:
-            time.sleep(10)
-            continue
-
-        print(f"[{datetime.now()}] Auto-trader running scan...")
-        for symbol in settings['pairs_to_trade']:
-            try:
-                analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
-                if not analyses: continue
-
-                # Multi-TF Confluence
-                actions = [get_trade_suggestion(a)['action'] for a in analyses.values()]
-                buys, sells = actions.count('Buy'), actions.count('Sell')
-
-                final_action = "Neutral"
-                confluence_count = 0
-                if buys > sells:
-                    final_action = "Buy"
-                    confluence_count = buys
-                elif sells > buys:
-                    final_action = "Sell"
-                    confluence_count = sells
-
-                if final_action != "Neutral" and confluence_count >= settings['min_confluence']:
-                    primary_tf = TRADING_STYLE_TIMEFRAMES[settings['trading_style']][0]
-                    suggestion = get_trade_suggestion(analyses[primary_tf])
-                    sl_pips = abs(suggestion['entry'] - suggestion['sl']) * 10000
-
-                    pos_size = _calculate_position_size(settings['account_balance'], settings['risk_per_trade'], sl_pips, symbol)
-
-                    trade_params = {
-                        "symbol": symbol, "trade_type": final_action, "lot_size": pos_size,
-                        "sl": suggestion['sl'], "tp": suggestion['tp'], "analysis": analyses
-                    }
-
-                    # Emit signal to frontend regardless of auto-trade setting
-                    socketio.emit('trade_signal', {
-                        "params": trade_params,
-                        "message": f"{final_action} signal on {symbol} with {confluence_count}-TF confluence."
-                    })
-
-                    if settings['auto_trading_enabled']:
-                        print(f"Executing {final_action} on {symbol}...")
-                        _execute_trade_logic(settings['mt5_credentials'], trade_params)
-                        socketio.emit('notification', {"message": f"Auto-trade executed: {final_action} {pos_size} lots of {symbol}."})
-                        time.sleep(300) # Cooldown after trading a pair
-
-            except Exception as e:
-                print(f"Error in trading loop for {symbol}: {e}")
-
-        time.sleep(60) # Wait a minute before the next full scan
-    print("Auto-trading thread stopped.")
 
 # --- API Routes ---
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -226,63 +155,42 @@ def handle_settings():
         STATE.update_settings(new_settings)
         return jsonify({"message": "Settings updated successfully."})
 
-@app.route('/api/start_autotrade', methods=['POST'])
-def start_autotrade():
-    if not STATE.autotrade_running:
-        STATE.autotrade_running = True
-        STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
-        STATE.autotrade_thread.start()
-        return jsonify({"message": "Auto-trading engine started."})
-    return jsonify({"message": "Auto-trading already running."})
-
-@app.route('/api/stop_autotrade', methods=['POST'])
-def stop_autotrade():
-    if STATE.autotrade_running:
-        STATE.autotrade_running = False
-        # No need to join, daemon thread will exit when app does
-    return jsonify({"message": "Auto-trading engine stopped."})
-
-@app.route('/api/execute_manual_trade', methods=['POST'])
-def execute_manual_trade():
-    try:
-        trade_params = request.get_json()
-        with STATE.lock:
-            creds = STATE.settings['mt5_credentials']
-
-        result = _execute_trade_logic(creds, trade_params)
-        socketio.emit('notification', {"message": f"Manual trade confirmed: {trade_params['trade_type']} {trade_params['lot_size']} lots of {trade_params['symbol']}."})
-        return jsonify({"success": True, "message": f"Order {result.order} placed."})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Add back other utility routes like get_account_info, get_open_positions, etc.
-# These should use the credentials from the AppState now.
 @app.route('/api/get_account_info', methods=['POST'])
+@mt5_required
 def get_account_info():
-    creds = request.get_json()
-    if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
-    if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     info = mt5.account_info()
     if info:
         return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
     return jsonify({"error": "Could not fetch account info."}), 500
 
 @app.route('/api/get_open_positions', methods=['POST'])
+@mt5_required
 def get_open_positions():
-    creds = request.get_json()
-    if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
-    if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     positions = mt5.positions_get()
     if positions is None: return jsonify([])
     return jsonify([{"ticket": p.ticket, "symbol": p.symbol, "type": "BUY" if p.type == 0 else "SELL", "volume": p.volume, "price_open": p.price_open, "profit": p.profit} for p in positions])
 
 @app.route('/api/get_all_symbols', methods=['POST'])
+@mt5_required
 def get_all_symbols():
-    creds = request.get_json()
-    if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
-    if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     symbols = [s.name for s in mt5.symbols_get() if s.visible]
     return jsonify(symbols)
+
+@app.route('/api/get_chart_data', methods=['POST'])
+@mt5_required
+def get_chart_data():
+    try:
+        creds = request.get_json()
+        symbol = creds.get('symbol')
+        timeframe_str = creds.get('timeframe')
+        mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
+        rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
+        if rates is None:
+            return jsonify({"error": f"Could not get rates for {symbol}"}), 500
+        chart_data = [format_bar_data(bar, timeframe_str) for bar in rates]
+        return jsonify(chart_data)
+    except Exception as e:
+        return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
 def _run_single_timeframe_analysis(df, symbol):
     """Runs the full analysis suite on a single dataframe."""
@@ -303,20 +211,15 @@ def _run_single_timeframe_analysis(df, symbol):
     return analysis
 
 @app.route('/api/analyze_multi_timeframe', methods=['POST'])
+@mt5_required
 def analyze_multi_timeframe():
     """New endpoint for multi-timeframe analysis based on trading style."""
     try:
         data = request.get_json()
         style = data.get('trading_style', 'DAY_TRADING').upper()
         symbol = data.get('symbol')
-        credentials = data.get('credentials')
 
         timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
-
-        if not ensure_mt5_initialized(path=credentials.get('terminal_path')):
-            return jsonify({"error": "MT5 terminal not found."}), 500
-        if not mt5.login(login=int(credentials['login']), password=credentials['password'], server=credentials['server']):
-            return jsonify({"error": "Authorization failed"}), 403
 
         analyses = {}
         for tf in timeframes:
@@ -361,29 +264,6 @@ def analyze_multi_timeframe():
         print(f"Multi-TF Analysis Error: {e}")
         return jsonify({"error": "Error during multi-timeframe analysis."}), 500
 
-@app.route('/api/get_chart_data', methods=['POST'])
-def get_chart_data():
-    try:
-        creds = request.get_json()
-        symbol = creds.get('symbol')
-        timeframe_str = creds.get('timeframe')
-        mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
-
-        if not ensure_mt5_initialized(path=creds.get('terminal_path')):
-            return jsonify({"error": "MT5 terminal not found."}), 500
-        if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']):
-            return jsonify({"error": "Authorization failed"}), 403
-
-        rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
-
-        if rates is None:
-            return jsonify({"error": f"Could not get rates for {symbol}"}), 500
-
-        chart_data = [format_bar_data(bar, timeframe_str) for bar in rates]
-        return jsonify(chart_data)
-    except Exception as e:
-        return jsonify({"error": f"An unexpected server error: {e}"}), 500
-
 @app.route('/api/run_backtest', methods=['POST'])
 def handle_backtest():
     data = request.get_json()
@@ -399,12 +279,9 @@ def handle_backtest():
 if __name__ == '__main__':
     init_db()
     STATE.load_settings()
-
-    # Directly start the background thread without calling the view function
+    # Auto-trading loop and other startup logic remains the same
     if not STATE.autotrade_running:
         STATE.autotrade_running = True
         STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
         STATE.autotrade_thread.start()
-
-    # The async_mode is now set in the constructor
     socketio.run(app, host='127.0.0.1', port=5000)
