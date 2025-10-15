@@ -507,7 +507,7 @@ export default function ChartsPage() {
                         <div>
                             <p className="font-semibold text-gray-200">{analysisResult.narrative.levels_title}</p>
                             <ul className="list-disc list-inside text-gray-400 italic">
-                                {analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
+                                {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
                             </ul>
                         </div>
                         <div>

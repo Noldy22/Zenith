@@ -25,6 +25,22 @@ export default function DashboardPage() {
   const [tradeSignal, setTradeSignal] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  const fetchAccountInfo = async (creds) => {
+    if (!creds || !creds.login) return;
+    try {
+        const response = await fetch('http://127.0.0.1:5000/api/get_account_info', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(creds),
+        });
+        if (response.ok) {
+            const data = await response.json();
+            if(data.balance) setAccountInfo(data);
+        }
+    } catch(e) { console.error("Failed to fetch account info:", e); }
+  };
+
+  // Effect for fetching initial settings and setting up socket
   useEffect(() => {
     const fetchSettings = async () => {
         try {
@@ -41,31 +57,6 @@ export default function DashboardPage() {
     };
     fetchSettings();
 
-    const fetchAccountInfo = async (creds) => {
-        if (!creds || !creds.login) return;
-        try {
-            const response = await fetch('http://127.0.0.1:5000/api/get_account_info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(creds),
-            });
-            if (response.ok) {
-                const data = await response.json();
-                if(data.balance) setAccountInfo(data);
-            }
-        } catch(e) { console.error("Failed to fetch account info:", e); }
-    };
-
-    // Set up polling for account info
-    useEffect(() => {
-        if (settings) {
-            const interval = setInterval(() => {
-                fetchAccountInfo(settings.mt5_credentials);
-            }, 5000); // Poll every 5 seconds
-            return () => clearInterval(interval);
-        }
-    }, [settings]);
-
     socket.on('connect', () => toast.success("Connected to backend server."));
     socket.on('disconnect', () => toast.error("Disconnected from backend server."));
     socket.on('trade_signal', (data) => {
@@ -78,6 +69,16 @@ export default function DashboardPage() {
         socket.disconnect();
     };
   }, []);
+
+  // Effect for polling account info, depends on settings
+  useEffect(() => {
+    if (settings && settings.mt5_credentials.login) {
+        const interval = setInterval(() => {
+            fetchAccountInfo(settings.mt5_credentials);
+        }, 5000); // Poll every 5 seconds
+        return () => clearInterval(interval);
+    }
+  }, [settings]);
   
   const handleConfirmTrade = async () => {
     try {
