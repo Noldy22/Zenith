@@ -145,6 +145,129 @@ def format_bar_data(bar, tf_str):
     time_data = int(dt.timestamp()) if tf_str in ['M1', 'M5', 'M15', 'H1', 'H4'] else {"year": dt.year, "month": dt.month, "day": dt.day}
     return {"time": time_data, "open": bar['open'], "high": bar['high'], "low": bar['low'], "close": bar['close']}
 
+# --- Core Analysis & Trading Logic ---
+def _run_full_analysis(symbol, credentials, style):
+    timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
+
+    analyses = {}
+    for tf in timeframes:
+        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200)
+        if rates is None or len(rates) < 20: continue
+        df = pd.DataFrame([format_bar_data(r, tf) for r in rates])
+
+        analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
+        _, _, pivots = find_levels(df)
+        analysis["market_structure"] = determine_market_structure(pivots)
+        analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
+        analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
+        analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
+        analysis["buy_side_liquidity"], _ = find_liquidity_pools(pivots)
+        analyses[tf] = analysis
+
+    return analyses
+
+def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
+    # This is a simplified calculation. A real one needs live pip value from the broker.
+    # We'll assume standard pairs where 1 pip = $0.0001
+    amount_to_risk = balance * (risk_pct / 100)
+    value_per_pip_per_lot = mt5.symbol_info(symbol).trade_tick_value if mt5_manager.is_initialized and mt5.symbol_info(symbol) else 10.0
+
+    risk_per_lot = sl_pips * value_per_pip_per_lot
+    if risk_per_lot == 0: return 0.01 # Avoid division by zero
+
+    position_size = round(amount_to_risk / risk_per_lot, 2)
+    return max(position_size, 0.01) # Return at least a micro lot
+
+def _execute_trade_logic(creds, trade_params):
+    if not mt5_manager.connect(creds): raise ConnectionError("MT5 connection failed for trade execution")
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": trade_params['symbol'],
+        "volume": trade_params['lot_size'],
+        "type": mt5.ORDER_TYPE_BUY if trade_params['trade_type'].upper() == 'BUY' else mt5.ORDER_TYPE_SELL,
+        "price": mt5.symbol_info_tick(trade_params['symbol']).ask if trade_params['trade_type'].upper() == 'BUY' else mt5.symbol_info_tick(trade_params['symbol']).bid,
+        "sl": trade_params['sl'],
+        "tp": trade_params['tp'],
+        "magic": 234000,
+        "comment": "Zenith AI Trade",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_FOK,
+    }
+    result = mt5.order_send(request)
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        raise ValueError(f"Order failed: {result.comment}")
+
+    # Log to DB
+    conn = sqlite3.connect('trades.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO trades (order_id, symbol, trade_type, analysis_json) VALUES (?, ?, ?, ?)",
+                   (result.order, trade_params['symbol'], trade_params['trade_type'], json.dumps(trade_params['analysis'])))
+    conn.commit()
+    conn.close()
+    return result
+
+# --- Auto-Trading Loop ---
+def trading_loop():
+    print("Auto-trading thread started.")
+    while STATE.autotrade_running:
+        with STATE.lock:
+            settings = STATE.settings.copy()
+
+        if not settings['auto_trading_enabled'] or not mt5_manager.is_initialized:
+            time.sleep(10)
+            continue
+
+        print(f"[{datetime.now()}] Auto-trader running scan...")
+        for symbol in settings['pairs_to_trade']:
+            try:
+                analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
+                if not analyses: continue
+
+                # Multi-TF Confluence
+                actions = [get_trade_suggestion(a)['action'] for a in analyses.values()]
+                buys, sells = actions.count('Buy'), actions.count('Sell')
+
+                final_action = "Neutral"
+                confluence_count = 0
+                if buys > sells:
+                    final_action = "Buy"
+                    confluence_count = buys
+                elif sells > buys:
+                    final_action = "Sell"
+                    confluence_count = sells
+
+                if final_action != "Neutral" and confluence_count >= settings['min_confluence']:
+                    primary_tf = TRADING_STYLE_TIMEFRAMES[settings['trading_style']][0]
+                    suggestion = get_trade_suggestion(analyses[primary_tf])
+                    sl_pips = abs(suggestion['entry'] - suggestion['sl']) * 10000
+
+                    pos_size = _calculate_position_size(settings['account_balance'], settings['risk_per_trade'], sl_pips, symbol)
+
+                    trade_params = {
+                        "symbol": symbol, "trade_type": final_action, "lot_size": pos_size,
+                        "sl": suggestion['sl'], "tp": suggestion['tp'], "analysis": analyses
+                    }
+
+                    # Emit signal to frontend regardless of auto-trade setting
+                    socketio.emit('trade_signal', {
+                        "params": trade_params,
+                        "message": f"{final_action} signal on {symbol} with {confluence_count}-TF confluence."
+                    })
+
+                    if settings['auto_trading_enabled']:
+                        print(f"Executing {final_action} on {symbol}...")
+                        _execute_trade_logic(settings['mt5_credentials'], trade_params)
+                        socketio.emit('notification', {"message": f"Auto-trade executed: {final_action} {pos_size} lots of {symbol}."})
+                        time.sleep(300) # Cooldown after trading a pair
+
+            except Exception as e:
+                print(f"Error in trading loop for {symbol}: {e}")
+
+        time.sleep(60) # Wait a minute before the next full scan
+    print("Auto-trading thread stopped.")
+
 # --- API Routes ---
 @app.route('/api/settings', methods=['GET', 'POST'])
 def handle_settings():
