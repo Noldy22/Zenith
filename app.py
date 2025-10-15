@@ -39,7 +39,10 @@ class MT5Manager:
                 # If login is different, shutdown and reconnect
                 mt5.shutdown()
 
-            if not mt5.initialize(path=credentials['terminal_path']):
+            # Clean the terminal path
+            terminal_path = credentials.get('terminal_path', '').strip('\'"')
+
+            if not mt5.initialize(path=terminal_path):
                 print(f"initialize() failed, error code = {mt5.last_error()}")
                 self.is_initialized = False
                 return False
