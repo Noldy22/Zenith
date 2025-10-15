@@ -252,17 +252,46 @@ export default function ChartsPage() {
   };
 
   const handleAnalysis = () => {
-    if (chartData.length < 20) {
-      showAlert("Not enough chart data for analysis.", 'error'); return;
+    const storedCreds = localStorage.getItem('mt5_credentials');
+    if (!storedCreds) {
+      showAlert("Please connect to your MT5 account first.", 'error');
+      return;
     }
-    setIsAnalyzing(true); setAnalysisResult(null);
-    fetch('http://127.0.0.1:5000/api/analyze', {
+
+    setIsAnalyzing(true);
+    setAnalysisResult(null);
+
+    const credentials = JSON.parse(storedCreds);
+
+    // Using the new multi-timeframe endpoint
+    fetch('http://127.0.0.1:5000/api/analyze_multi_timeframe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chartData: chartData, symbol: activeSymbol }),
+        body: JSON.stringify({
+            credentials,
+            symbol: activeSymbol,
+            trading_style: 'DAY_TRADING' // Or get this from settings
+        }),
     })
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
-    .then((data: AnalysisResult) => setAnalysisResult(data))
+    .then(data => {
+        // We need to adapt the new response format to the old state structure
+        // For now, we'll just display the primary suggestion's narrative
+        const primaryTimeframe = Object.keys(data.individual_analyses)[0];
+        const primaryAnalysis = data.individual_analyses[primaryTimeframe];
+
+        const adaptedResult = {
+            ...primaryAnalysis,
+            confidence: data.final_confidence === 'HIGH' ? 90 : (data.final_confidence === 'MEDIUM' ? 65 : 40),
+            suggestion: {
+                ...data.primary_suggestion,
+                reason: `Confidence: ${data.final_confidence}. Action: ${data.final_action}. ` + data.primary_suggestion.reason,
+            },
+            narrative: data.narratives[primaryTimeframe],
+            precautions: ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."],
+        };
+        setAnalysisResult(adaptedResult);
+    })
     .catch(error => showAlert(`Analysis failed: ${error.error || "An unknown error."}`, 'error'))
     .finally(() => setIsAnalyzing(false));
   };
@@ -440,7 +469,7 @@ export default function ChartsPage() {
         <div className="md:col-span-1 bg-secondary rounded-xl p-4 min-h-[600px] flex flex-col shadow-lg">
           <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
             <div className="flex gap-2 mb-4">
-                <button onClick={handleAnalysis} disabled={isAnalyzing || isLoading || !isConnected} className="w-full px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
+                <button onClick={handleAnalysis} disabled={isAnalyzing} className="w-full px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
                   {isAnalyzing ? 'Analyzing...' : 'Analyze'}
                 </button>
             </div>
