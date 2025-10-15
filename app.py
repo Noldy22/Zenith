@@ -263,7 +263,6 @@ def get_account_info():
     if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
     if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     info = mt5.account_info()
-    mt5.shutdown()
     if info:
         return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
     return jsonify({"error": "Could not fetch account info."}), 500
@@ -274,7 +273,6 @@ def get_open_positions():
     if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
     if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     positions = mt5.positions_get()
-    mt5.shutdown()
     if positions is None: return jsonify([])
     return jsonify([{"ticket": p.ticket, "symbol": p.symbol, "type": "BUY" if p.type == 0 else "SELL", "volume": p.volume, "price_open": p.price_open, "profit": p.profit} for p in positions])
 
@@ -284,7 +282,6 @@ def get_all_symbols():
     if not ensure_mt5_initialized(path=creds.get('terminal_path')): return jsonify({"error": "MT5 terminal not found."}), 500
     if not mt5.login(login=int(creds['login']), password=creds['password'], server=creds['server']): return jsonify({"error": "Authorization failed"}), 403
     symbols = [s.name for s in mt5.symbols_get() if s.visible]
-    mt5.shutdown()
     return jsonify(symbols)
 
 def _run_single_timeframe_analysis(df, symbol):
@@ -332,8 +329,6 @@ def analyze_multi_timeframe():
         if not analyses:
             return jsonify({"error": "Could not fetch enough data for any timeframe."}), 400
 
-        mt5.shutdown()
-
         # --- Multi-Timeframe Confluence Logic ---
         suggestions = [a['suggestion']['action'] for a in analyses.values()]
         primary_suggestion = analyses[timeframes[0]]['suggestion'] # Use lowest TF for SL/TP
@@ -380,7 +375,6 @@ def get_chart_data():
             return jsonify({"error": "Authorization failed"}), 403
 
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
-        mt5.shutdown()
 
         if rates is None:
             return jsonify({"error": f"Could not get rates for {symbol}"}), 500

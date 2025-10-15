@@ -112,18 +112,23 @@ export const TradingChart = (props: {
             const drawZoneWithLabel = (zone: Zone, color: string, label: string, transparency: number) => {
                 const yTop = series.priceToCoordinate(zone.high);
                 const yBottom = series.priceToCoordinate(zone.low);
-                const xStart = chart.timeScale().timeToCoordinate(zone.time);
-                if (yTop === null || yBottom === null || xStart === null) return;
+                let xStart = chart.timeScale().timeToCoordinate(zone.time);
+
+                if (yTop === null || yBottom === null) return;
+
+                // If the zone starts off-screen, clamp its drawing start position to the edge
+                const xStartVisible = xStart === null ? 0 : Math.max(xStart, 0);
 
                 const chartWidth = chart.timeScale().width();
                 ctx.globalAlpha = transparency;
                 ctx.fillStyle = color;
-                ctx.fillRect(xStart, yTop, chartWidth - xStart, yBottom - yTop);
+                ctx.fillRect(xStartVisible, yTop, chartWidth - xStartVisible, yBottom - yTop);
 
                 ctx.globalAlpha = 1.0;
                 ctx.fillStyle = "#FFFFFF";
                 ctx.font = "12px sans-serif";
-                ctx.fillText(label, xStart + 5, yTop + 15);
+                // Ensure the label is also drawn on-screen
+                ctx.fillText(label, xStartVisible + 5, yTop + 15);
             };
 
             const drawSuggestionTool = (sugg: Suggestion) => {
