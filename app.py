@@ -301,6 +301,12 @@ def handle_backtest():
 
 if __name__ == '__main__':
     init_db()
-    STATE.load_settings() # Load saved settings on startup
-    start_autotrade() # Start the engine immediately
+    STATE.load_settings()
+
+    # Directly start the background thread without calling the view function
+    if not STATE.autotrade_running:
+        STATE.autotrade_running = True
+        STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
+        STATE.autotrade_thread.start()
+
     socketio.run(app, host='127.0.0.1', port=5000, debug=False)
