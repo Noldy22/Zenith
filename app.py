@@ -287,6 +287,85 @@ def get_all_symbols():
     mt5.shutdown()
     return jsonify(symbols)
 
+def _run_single_timeframe_analysis(df, symbol):
+    """Runs the full analysis suite on a single dataframe."""
+    analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
+    analysis["support"], analysis["resistance"], pivots = find_levels(df)
+    analysis["market_structure"] = determine_market_structure(pivots)
+    analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
+    analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
+    analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
+    analysis["buy_side_liquidity"], analysis["sell_side_liquidity"] = find_liquidity_pools(pivots)
+    analysis["candlestick_patterns"] = find_candlestick_patterns(df)
+
+    suggestion = get_trade_suggestion(analysis)
+    analysis["suggestion"] = suggestion
+    analysis["confidence"] = calculate_confidence(analysis, suggestion)
+    analysis["narrative"] = generate_market_narrative(analysis)
+
+    return analysis
+
+@app.route('/api/analyze_multi_timeframe', methods=['POST'])
+def analyze_multi_timeframe():
+    """New endpoint for multi-timeframe analysis based on trading style."""
+    try:
+        data = request.get_json()
+        style = data.get('trading_style', 'DAY_TRADING').upper()
+        symbol = data.get('symbol')
+        credentials = data.get('credentials')
+
+        timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
+
+        if not ensure_mt5_initialized(path=credentials.get('terminal_path')):
+            return jsonify({"error": "MT5 terminal not found."}), 500
+        if not mt5.login(login=int(credentials['login']), password=credentials['password'], server=credentials['server']):
+            return jsonify({"error": "Authorization failed"}), 403
+
+        analyses = {}
+        for tf in timeframes:
+            rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200)
+            if rates is None or len(rates) < 20: continue
+            chart_data = [format_bar_data(bar, tf) for bar in rates]
+            df = pd.DataFrame(chart_data)
+            analyses[tf] = _run_single_timeframe_analysis(df, symbol)
+
+        if not analyses:
+            return jsonify({"error": "Could not fetch enough data for any timeframe."}), 400
+
+        mt5.shutdown()
+
+        # --- Multi-Timeframe Confluence Logic ---
+        suggestions = [a['suggestion']['action'] for a in analyses.values()]
+        primary_suggestion = analyses[timeframes[0]]['suggestion'] # Use lowest TF for SL/TP
+
+        buy_signals = suggestions.count('Buy')
+        sell_signals = suggestions.count('Sell')
+
+        final_confidence = "LOW"
+        if buy_signals == len(timeframes) or sell_signals == len(timeframes):
+            final_confidence = "HIGH"
+        elif buy_signals >= 2 or sell_signals >= 2:
+            final_confidence = "MEDIUM"
+
+        final_action = "Neutral"
+        if final_confidence != "LOW":
+            final_action = "Buy" if buy_signals > sell_signals else "Sell"
+
+        # Aggregate narratives
+        full_narrative = {tf: a['narrative'] for tf, a in analyses.items()}
+
+        return jsonify({
+            "final_action": final_action,
+            "final_confidence": final_confidence,
+            "primary_suggestion": primary_suggestion, # Contains SL/TP from primary TF
+            "narratives": full_narrative,
+            "individual_analyses": analyses # For detailed view on frontend
+        })
+
+    except Exception as e:
+        print(f"Multi-TF Analysis Error: {e}")
+        return jsonify({"error": "Error during multi-timeframe analysis."}), 500
+
 @app.route('/api/get_chart_data', methods=['POST'])
 def get_chart_data():
     try:

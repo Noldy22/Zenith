@@ -13,8 +13,14 @@ import StatsPanel from '../../components/StatsPanel';
 
 const socket = io('http://127.0.0.1:5000');
 
+const defaultSettings = {
+    mt5_credentials: { login: '', password: '', server: '', terminal_path: '' },
+    pairs_to_trade: ['EURUSD'],
+    auto_trading_enabled: false,
+};
+
 export default function DashboardPage() {
-  const [settings, setSettings] = useState(null);
+  const [settings, setSettings] = useState(defaultSettings);
   const [accountInfo, setAccountInfo] = useState({ balance: 0, equity: 0 });
   const [tradeSignal, setTradeSignal] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
