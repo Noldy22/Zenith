@@ -110,48 +110,38 @@ export default function ChartsPage() {
   }, [activeSymbol, activeTimeframe, showAlert]);
 
   useEffect(() => {
-    const checkConnection = async () => {
-        const storedCreds = localStorage.getItem('mt5_credentials');
-        if (storedCreds) {
-            try {
-                const credentials = JSON.parse(storedCreds);
-                setMt5Login(credentials.login || '');
-                setMt5Password(credentials.password || '');
-                setMt5Server(credentials.server || '');
-                setMt5TerminalPath(credentials.terminal_path || brokerPaths.Exness);
-                
-                const savedPath = credentials.terminal_path;
-                const broker = Object.keys(brokerPaths).find(key => brokerPaths[key as keyof typeof brokerPaths] === savedPath) as keyof typeof brokerPaths;
-                setBrokerSelection(broker || 'Custom');
+    const fetchSettingsAndConnect = async () => {
+        try {
+            const response = await fetch('http://127.0.0.1:5000/api/settings');
+            const settings = await response.json();
 
-                const response = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+            if (settings && settings.mt5_credentials && settings.mt5_credentials.login) {
+                setMt5Login(settings.mt5_credentials.login);
+                setMt5Password(settings.mt5_credentials.password);
+                setMt5Server(settings.mt5_credentials.server);
+                setMt5TerminalPath(settings.mt5_credentials.terminal_path);
+
+                // This will trigger a connection attempt on the backend
+                const symbolsResponse = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(credentials),
+                    body: JSON.stringify(settings.mt5_credentials)
                 });
-                if (response.ok) {
-                    const newSymbols = await response.json();
+
+                if (symbolsResponse.ok) {
+                    const newSymbols = await symbolsResponse.json();
                     setSymbols(newSymbols);
                     setIsConnected(true);
-                    
-                    if (!newSymbols.includes(activeSymbol)) {
-                        const defaultSymbol = newSymbols.find((s: string) => s.toUpperCase() === 'EURUSD') || newSymbols[0];
-                        if (defaultSymbol) {
-                            setActiveSymbol(defaultSymbol);
-                        }
-                    }
                 } else {
                     setIsConnected(false);
-                    localStorage.removeItem('mt5_credentials');
                 }
-            } catch (error) {
-                console.error("Connection check failed:", error);
-                setIsConnected(false);
             }
+        } catch (error) {
+            console.error("Failed to fetch settings:", error);
+            setIsConnected(false);
         }
     };
-    checkConnection();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetchSettingsAndConnect();
   }, []);
 
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);

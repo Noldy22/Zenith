@@ -34,7 +34,8 @@ class MT5Manager:
         with self.lock:
             if self.is_initialized:
                 # If already initialized, just ensure login is current
-                if mt5.terminal_info().login == credentials['login']:
+                account_info = mt5.account_info()
+                if account_info and account_info.login == credentials['login']:
                     return True
                 # If login is different, shutdown and reconnect
                 mt5.shutdown()
