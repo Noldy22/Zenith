@@ -1,0 +1,8 @@
+Flask
+Flask-Cors
+Flask-SocketIO
+MetaTrader5
+pandas
+scikit-learn
+joblib
+eventlet
