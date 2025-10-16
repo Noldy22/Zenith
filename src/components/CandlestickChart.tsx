@@ -39,7 +39,7 @@ const CandlestickChart = ({ credentials, symbol, timeframe }) => {
         // Fetch initial data
         const fetchChartData = async () => {
             try {
-                const response = await fetch('http://127.0.0.1:5000/api/get_chart_data', {
+                const response = await fetch(`http://${window.location.hostname}:5000/api/get_chart_data`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ...credentials, symbol, timeframe }),
