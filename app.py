@@ -309,6 +309,9 @@ def handle_settings():
 @app.route('/api/get_account_info', methods=['POST'])
 @mt5_required
 def get_account_info():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     info = mt5.account_info()
     if info:
         return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
@@ -317,6 +320,9 @@ def get_account_info():
 @app.route('/api/get_open_positions', methods=['POST'])
 @mt5_required
 def get_open_positions():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     positions = mt5.positions_get()
     if positions is None: return jsonify([])
     return jsonify([{"ticket": p.ticket, "symbol": p.symbol, "type": "BUY" if p.type == 0 else "SELL", "volume": p.volume, "price_open": p.price_open, "profit": p.profit} for p in positions])
@@ -324,6 +330,9 @@ def get_open_positions():
 @app.route('/api/get_all_symbols', methods=['POST'])
 @mt5_required
 def get_all_symbols():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     symbols = [s.name for s in mt5.symbols_get() if s.visible]
     return jsonify(symbols)
 
@@ -332,6 +341,10 @@ def get_all_symbols():
 def get_chart_data():
     try:
         creds = request.get_json()
+        # Ensure connection with the provided credentials before proceeding
+        if not mt5_manager.connect(creds):
+            return jsonify({"error": "MT5 connection failed for chart data."}), 503
+
         symbol = creds.get('symbol')
         timeframe_str = creds.get('timeframe')
         mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
