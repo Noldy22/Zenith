@@ -4,6 +4,13 @@ import { useState, useEffect } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
+const getBackendUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:5000`;
+    }
+    return 'http://127.0.0.1:5000'; // Default for server-side rendering
+};
+
 const SettingsPage = () => {
     const [settings, setSettings] = useState({
         trading_style: "DAY_TRADING",
@@ -27,7 +34,7 @@ const SettingsPage = () => {
         // Fetch initial settings from backend
         const fetchSettings = async () => {
             try {
-                const response = await fetch('http://127.0.0.1:5000/api/settings');
+                const response = await fetch(`${getBackendUrl()}/api/settings`);
                 if (response.ok) {
                     const data = await response.json();
                     setSettings(data);
@@ -61,7 +68,7 @@ const SettingsPage = () => {
     const handleSaveSettings = async () => {
         toast.info("Saving settings...");
         try {
-            const response = await fetch('http://127.0.0.1:5000/api/settings', {
+            const response = await fetch(`${getBackendUrl()}/api/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings),

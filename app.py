@@ -411,4 +411,4 @@ if __name__ == '__main__':
         STATE.autotrade_running = True
         STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
         STATE.autotrade_thread.start()
-    socketio.run(app, host='127.0.0.1', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000)

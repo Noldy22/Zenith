@@ -8,6 +8,12 @@ import type { ISeriesApi, Time } from "lightweight-charts";
 import { useAlert } from '@/context/AlertContext';
 import { io, Socket } from "socket.io-client";
 
+const getBackendUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:5000`;
+    }
+    return 'http://127.0.0.1:5000'; // Default for server-side rendering
+};
 
 const timeframes = {
   'M1': 'M1', 'M5': 'M5', 'M15': 'M15', 'M30': 'M30', '1H': 'H1',
@@ -94,7 +100,7 @@ export default function ChartsPage() {
     }
     const credentials = JSON.parse(storedCreds);
     const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
-    fetch('http://127.0.0.1:5000/api/get_chart_data', {
+    fetch(`${getBackendUrl()}/api/get_chart_data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
@@ -112,7 +118,7 @@ export default function ChartsPage() {
   useEffect(() => {
     const fetchSettingsAndConnect = async () => {
         try {
-            const response = await fetch('http://127.0.0.1:5000/api/settings');
+            const response = await fetch(`${getBackendUrl()}/api/settings`);
             const settings = await response.json();
 
             if (settings && settings.mt5_credentials && settings.mt5_credentials.login) {
@@ -122,7 +128,7 @@ export default function ChartsPage() {
                 setMt5TerminalPath(settings.mt5_credentials.terminal_path);
 
                 // This will trigger a connection attempt on the backend
-                const symbolsResponse = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+                const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(settings.mt5_credentials)
@@ -148,7 +154,7 @@ export default function ChartsPage() {
   
   useEffect(() => {
     if (isConnected) {
-        socketRef.current = io('http://127.0.0.1:5000');
+        socketRef.current = io(getBackendUrl());
         socketRef.current.on('connect', () => {
             console.log('Socket connected!');
             const storedCreds = localStorage.getItem('mt5_credentials');
@@ -205,7 +211,7 @@ export default function ChartsPage() {
       terminal_path: mt5TerminalPath
     };
     try {
-        const response = await fetch('http://127.0.0.1:5000/api/get_all_symbols', {
+        const response = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(credentials),
@@ -254,7 +260,7 @@ export default function ChartsPage() {
     const credentials = JSON.parse(storedCreds);
 
     // Using the new multi-timeframe endpoint
-    fetch('http://127.0.0.1:5000/api/analyze_multi_timeframe', {
+    fetch(`${getBackendUrl()}/api/analyze_multi_timeframe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -293,7 +299,7 @@ export default function ChartsPage() {
     if (!analysisResult) { showAlert('Please run analysis before placing a trade.', 'error'); return; }
     setIsTrading(true);
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/execute_trade', {
+      const response = await fetch(`${getBackendUrl()}/api/execute_trade`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             ...JSON.parse(storedCreds), symbol: activeSymbol, lot_size: lotSize, trade_type: tradeType,
@@ -322,7 +328,7 @@ export default function ChartsPage() {
         lot_size: autoTradeLotSize, confidence_threshold: confidenceThreshold,
     };
     try {
-        const response = await fetch(`http://127.0.0.1:5000${endpoint}`, {
+        const response = await fetch(`${getBackendUrl()}${endpoint}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });

@@ -11,7 +11,14 @@ import CandlestickChart from '../../components/CandlestickChart';
 import PositionTracker from '../../components/PositionTracker';
 import StatsPanel from '../../components/StatsPanel';
 
-const socket = io('http://127.0.0.1:5000');
+const getBackendUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:5000`;
+    }
+    return 'http://127.0.0.1:5000'; // Default for server-side rendering
+};
+
+const socket = io(getBackendUrl());
 
 const defaultSettings = {
     mt5_credentials: { login: '', password: '', server: '', terminal_path: '' },
@@ -28,7 +35,7 @@ export default function DashboardPage() {
   const fetchAccountInfo = async (creds) => {
     if (!creds || !creds.login) return;
     try {
-        const response = await fetch('http://127.0.0.1:5000/api/get_account_info', {
+        const response = await fetch(`${getBackendUrl()}/api/get_account_info`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(creds),
@@ -44,7 +51,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchSettings = async () => {
         try {
-            const response = await fetch('http://127.0.0.1:5000/api/settings');
+            const response = await fetch(`${getBackendUrl()}/api/settings`);
             if (response.ok) {
                 const data = await response.json();
                 setSettings(data);
@@ -82,7 +89,7 @@ export default function DashboardPage() {
   
   const handleConfirmTrade = async () => {
     try {
-        const response = await fetch('http://127.0.0.1:5000/api/execute_manual_trade', {
+        const response = await fetch(`${getBackendUrl()}/api/execute_manual_trade`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(tradeSignal),
