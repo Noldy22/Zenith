@@ -2,223 +2,166 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { io } from 'socket.io-client';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
-interface AccountInfo {
-  balance: number;
-  equity: number;
-  profit: number;
-}
+// --- Component Imports ---
+import CandlestickChart from '../../components/CandlestickChart';
+import PositionTracker from '../../components/PositionTracker';
+import StatsPanel from '../../components/StatsPanel';
 
-interface Position {
-  ticket: number;
-  symbol: string;
-  type: 'BUY' | 'SELL';
-  volume: number;
-  price_open: number;
-  profit: number;
-}
+const getBackendUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:5000`;
+    }
+    return 'http://127.0.0.1:5000'; // Default for server-side rendering
+};
 
-interface Deal {
-    ticket: number;
-    symbol: string;
-    type: 'BUY' | 'SELL';
-    volume: number;
-    price: number;
-    profit: number;
-    time: number;
-}
+const socket = io(getBackendUrl());
+
+const defaultSettings = {
+    mt5_credentials: { login: '', password: '', server: '', terminal_path: '' },
+    pairs_to_trade: ['EURUSD'],
+    auto_trading_enabled: false,
+};
 
 export default function DashboardPage() {
-  const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [tradeHistory, setTradeHistory] = useState<Deal[]>([]);
+  const [settings, setSettings] = useState(defaultSettings);
+  const [accountInfo, setAccountInfo] = useState({ balance: 0, equity: 0 });
+  const [tradeSignal, setTradeSignal] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isConnected, setIsConnected] = useState(false);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      const storedCreds = localStorage.getItem('mt5_credentials');
-      if (!storedCreds) {
-        setIsConnected(false);
-        setIsLoading(false);
-        return;
-      }
-      
-      setIsConnected(true);
-      try {
-        const credentials = JSON.parse(storedCreds);
-        
-        // Create promises for all API calls
-        const accountPromise = fetch('http://127.0.0.1:5000/api/get_account_info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(credentials),
-        });
-        const positionsPromise = fetch('http://127.0.0.1:5000/api/get_open_positions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(credentials),
-        });
-        const historyPromise = fetch('http://127.0.0.1:5000/api/get_history_deals', {
+  const fetchAccountInfo = async (creds) => {
+    if (!creds || !creds.login) return;
+    try {
+        const response = await fetch(`${getBackendUrl()}/api/get_account_info`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(credentials),
+            body: JSON.stringify(creds),
         });
-
-        // Wait for all promises to resolve
-        const [accountResponse, positionsResponse, historyResponse] = await Promise.all([accountPromise, positionsPromise, historyPromise]);
-
-        if (accountResponse.ok) setAccountInfo(await accountResponse.json());
-        if (positionsResponse.ok) setPositions(await positionsResponse.json());
-        if (historyResponse.ok) setTradeHistory(await historyResponse.json());
-
-        if (!accountResponse.ok || !positionsResponse.ok || !historyResponse.ok) {
-            throw new Error('One or more API calls failed');
+        if (response.ok) {
+            const data = await response.json();
+            if(data.balance) setAccountInfo(data);
         }
+    } catch(e) { console.error("Failed to fetch account info:", e); }
+  };
 
-      } catch (error) {
-        console.error("Error fetching data:", error);
-        setIsConnected(false);
-        setAccountInfo(null);
-        setPositions([]);
-        setTradeHistory([]);
-      } finally {
-        setIsLoading(false);
-      }
+  // Effect for fetching initial settings and setting up socket
+  useEffect(() => {
+    const fetchSettings = async () => {
+        try {
+            const response = await fetch(`${getBackendUrl()}/api/settings`);
+            if (response.ok) {
+                const data = await response.json();
+                setSettings(data);
+                if(data.mt5_credentials.login) {
+                    fetchAccountInfo(data.mt5_credentials);
+                }
+            }
+        } catch (e) { console.error(e); }
+        finally { setIsLoading(false); }
     };
+    fetchSettings();
 
-    fetchData(); // Initial fetch
-    const interval = setInterval(fetchData, 5000); // Poll every 5 seconds
+    socket.on('connect', () => toast.success("Connected to backend server."));
+    socket.on('disconnect', () => toast.error("Disconnected from backend server."));
+    socket.on('trade_signal', (data) => {
+        toast.info(data.message, { autoClose: 10000 });
+        setTradeSignal(data.params);
+    });
+    socket.on('notification', (data) => toast.info(data.message));
 
-    return () => clearInterval(interval); // Cleanup on component unmount
+    return () => {
+        socket.disconnect();
+    };
   }, []);
 
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-    }).format(value);
-  };
+  // Effect for polling account info, depends on settings
+  useEffect(() => {
+    if (settings && settings.mt5_credentials.login) {
+        const interval = setInterval(() => {
+            fetchAccountInfo(settings.mt5_credentials);
+        }, 5000); // Poll every 5 seconds
+        return () => clearInterval(interval);
+    }
+  }, [settings]);
   
-  const getProfitColor = (profit: number) => {
-    if (profit > 0) return 'text-green-400';
-    if (profit < 0) return 'text-red-400';
-    return 'text-gray-400';
+  const handleConfirmTrade = async () => {
+    try {
+        const response = await fetch(`${getBackendUrl()}/api/execute_manual_trade`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(tradeSignal),
+        });
+        const result = await response.json();
+        if (response.ok) {
+            toast.success("Trade confirmed and executed!");
+            setTradeSignal(null);
+        } else {
+            toast.error(`Trade failed: ${result.error}`);
+        }
+    } catch (e) {
+        toast.error("Failed to connect to backend to execute trade.");
+    }
   };
 
-  const formatTimestamp = (timestamp: number) => {
-      return new Date(timestamp * 1000).toLocaleString();
+  if (isLoading) {
+    return <div className="p-8 text-center">Loading dashboard...</div>;
   }
 
   return (
-    <main className="p-8">
-      <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-amber-600 mb-8">Dashboard</h1>
-      
-      {!isConnected ? (
-        <div className="bg-secondary p-8 rounded-lg shadow-lg text-center">
-          <h2 className="text-2xl font-semibold mb-4">Not Connected</h2>
-          <p className="text-gray-400 mb-6">Please connect your MT5 account on the Charts page to see your live data.</p>
-          <Link href="/charts" className="px-6 py-2 bg-primary text-background font-bold rounded-lg hover:bg-yellow-600 transition-colors">
-            Go to Charts
-          </Link>
-        </div>
-      ) : isLoading ? (
-        <div className="bg-secondary p-6 rounded-lg shadow-lg">
-          <p className="text-center text-gray-400">Loading Account Data...</p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Account Summary */}
-                <div className="bg-secondary p-6 rounded-lg shadow-lg lg:col-span-1">
-                    <h2 className="text-2xl font-semibold mb-4">Account Summary</h2>
-                    <div className="space-y-3">
-                        <div className="flex justify-between">
-                            <span className="text-gray-400">Balance:</span>
-                            <span className="font-mono">{formatCurrency(accountInfo?.balance ?? 0)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-gray-400">Equity:</span>
-                            <span className="font-mono">{formatCurrency(accountInfo?.equity ?? 0)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-gray-400">Floating P/L:</span>
-                            <span className={`font-mono ${getProfitColor(accountInfo?.profit ?? 0)}`}>
-                            {formatCurrency(accountInfo?.profit ?? 0)}
-                            </span>
-                        </div>
-                    </div>
-                </div>
+    <main className="p-4 sm:p-6 lg:p-8 bg-gray-900 text-white min-h-screen">
+        <ToastContainer theme="dark" position="bottom-right" />
 
-                {/* Open Positions */}
-                <div className="bg-secondary p-6 rounded-lg shadow-lg lg:col-span-2">
-                    <h2 className="text-2xl font-semibold mb-4">Open Positions</h2>
-                    {positions.length > 0 ? (
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-sm text-left">
-                        <thead className="text-xs text-gray-400 uppercase border-b border-border">
-                            <tr>
-                            <th scope="col" className="px-4 py-3">Symbol</th>
-                            <th scope="col" className="px-4 py-3">Type</th>
-                            <th scope="col" className="px-4 py-3">Volume</th>
-                            <th scope="col" className="px-4 py-3">Open Price</th>
-                            <th scope="col" className="px-4 py-3 text-right">Profit</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {positions.map((pos) => (
-                            <tr key={pos.ticket} className="border-b border-border">
-                                <td className="px-4 py-3 font-medium">{pos.symbol}</td>
-                                <td className={`px-4 py-3 font-semibold ${pos.type === 'BUY' ? 'text-blue-400' : 'text-orange-400'}`}>{pos.type}</td>
-                                <td className="px-4 py-3">{pos.volume}</td>
-                                <td className="px-4 py-3">{pos.price_open}</td>
-                                <td className={`px-4 py-3 text-right font-mono ${getProfitColor(pos.profit)}`}>{formatCurrency(pos.profit)}</td>
-                            </tr>
-                            ))}
-                        </tbody>
-                        </table>
-                    </div>
-                    ) : (
-                    <p className="text-gray-400 text-center mt-4">No open positions.</p>
-                    )}
+        <header className="flex justify-between items-center mb-6 p-4 bg-gray-800 rounded-lg shadow-lg">
+            <div>
+                <h1 className="text-xl font-bold">Forex Trading Bot</h1>
+                <p className="text-sm text-gray-400">
+                    Account: {settings?.mt5_credentials?.login || 'N/A'} | Balance: ${accountInfo.balance.toFixed(2)} | Equity: ${accountInfo.equity.toFixed(2)}
+                </p>
+            </div>
+            <div className="flex items-center gap-4">
+                <Link href="/settings" className="p-2 rounded-md hover:bg-gray-700">⚙️ Settings</Link>
+                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${settings?.auto_trading_enabled ? 'bg-green-500' : 'bg-red-500'}`}>
+                    Auto-Trade: {settings?.auto_trading_enabled ? 'ON' : 'OFF'}
+                </span>
+            </div>
+        </header>
+
+        {tradeSignal && (
+             <div className="bg-yellow-500/20 border border-yellow-500 text-yellow-300 p-4 rounded-lg mb-6 shadow-xl animate-pulse">
+                <h3 className="font-bold">🚨 TRADE ALERT: {tradeSignal.trade_type} {tradeSignal.symbol}</h3>
+                <p>Entry: ~{tradeSignal.entry} | SL: {tradeSignal.sl} | TP: {tradeSignal.tp}</p>
+                <p>Position Size: {tradeSignal.lot_size} lots</p>
+                <div className="mt-4">
+                    <button onClick={handleConfirmTrade} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-bold mr-2">Confirm Trade</button>
+                    <button onClick={() => setTradeSignal(null)} className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg font-bold">Reject</button>
                 </div>
             </div>
-            {/* Trade History */}
-            <div className="bg-secondary p-6 rounded-lg shadow-lg">
-                <h2 className="text-2xl font-semibold mb-4">Trade History (Last 7 Days)</h2>
-                {tradeHistory.length > 0 ? (
-                    <div className="overflow-x-auto max-h-96">
-                        <table className="w-full text-sm text-left">
-                            <thead className="text-xs text-gray-400 uppercase border-b border-border sticky top-0 bg-secondary">
-                                <tr>
-                                    <th scope="col" className="px-4 py-3">Symbol</th>
-                                    <th scope="col" className="px-4 py-3">Type</th>
-                                    <th scope="col" className="px-4 py-3">Volume</th>
-                                    <th scope="col" className="px-4 py-3">Close Price</th>
-                                    <th scope="col" className="px-4 py-3">Close Time</th>
-                                    <th scope="col" className="px-4 py-3 text-right">Profit</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {tradeHistory.map((deal) => (
-                                <tr key={deal.ticket} className="border-b border-border">
-                                    <td className="px-4 py-3 font-medium">{deal.symbol}</td>
-                                    <td className={`px-4 py-3 font-semibold ${deal.type === 'BUY' ? 'text-blue-400' : 'text-orange-400'}`}>{deal.type}</td>
-                                    <td className="px-4 py-3">{deal.volume}</td>
-                                    <td className="px-4 py-3">{deal.price}</td>
-                                    <td className="px-4 py-3">{formatTimestamp(deal.time)}</td>
-                                    <td className={`px-4 py-3 text-right font-mono ${getProfitColor(deal.profit)}`}>{formatCurrency(deal.profit)}</td>
-                                </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 bg-gray-800 p-4 rounded-lg shadow-lg">
+                <h2 className="text-2xl font-semibold mb-4">Market Analysis</h2>
+                {settings?.mt5_credentials?.login ? (
+                    <CandlestickChart
+                        credentials={settings.mt5_credentials}
+                        symbol={settings.pairs_to_trade[0] || 'EURUSD'}
+                        timeframe="H1"
+                    />
                 ) : (
-                    <p className="text-gray-400 text-center mt-4">No closed trades in the last 7 days.</p>
+                    <div className="h-96 flex items-center justify-center">
+                        <p className="text-gray-500">Please enter MT5 credentials in Settings to view chart.</p>
+                    </div>
                 )}
             </div>
+
+            <aside className="space-y-6">
+                <PositionTracker credentials={settings?.mt5_credentials} />
+                <StatsPanel />
+            </aside>
         </div>
-      )}
     </main>
   );
 }
