@@ -10,6 +10,7 @@ import threading
 import time
 import os
 from functools import wraps
+import socket # Import socket to get local IP
 
 # --- AI & Learning Imports ---
 from analysis import (
@@ -20,9 +21,37 @@ from analysis import (
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features
 from backtest import run_backtest
 
+# --- Dynamic Origin Configuration for CORS ---
+def get_local_ip():
+    """Finds the local IP address of the machine."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Doesn't even have to be reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1' # Default to localhost if unable to find IP
+    finally:
+        s.close()
+    return IP
+
+local_ip = get_local_ip()
+# Define allowed origins for CORS, including localhost and the machine's network IP
+allowed_origins = [
+    "http://localhost:3000",
+    f"http://{local_ip}:3000"
+]
+
 app = Flask(__name__)
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+# Apply CORS with the specific list of allowed origins
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+# Configure Socket.IO with the same origins for robust WebSocket connections
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
+
+print("--- Zenith Backend Configuration ---")
+print(f"Detected Local IP: {local_ip}")
+print(f"Allowed CORS Origins: {allowed_origins}")
+print("---------------------------------")
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
@@ -285,6 +314,9 @@ def handle_settings():
 @app.route('/api/get_account_info', methods=['POST'])
 @mt5_required
 def get_account_info():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     info = mt5.account_info()
     if info:
         return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
@@ -293,6 +325,9 @@ def get_account_info():
 @app.route('/api/get_open_positions', methods=['POST'])
 @mt5_required
 def get_open_positions():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     positions = mt5.positions_get()
     if positions is None: return jsonify([])
     return jsonify([{"ticket": p.ticket, "symbol": p.symbol, "type": "BUY" if p.type == 0 else "SELL", "volume": p.volume, "price_open": p.price_open, "profit": p.profit} for p in positions])
@@ -300,23 +335,41 @@ def get_open_positions():
 @app.route('/api/get_all_symbols', methods=['POST'])
 @mt5_required
 def get_all_symbols():
+    creds = request.get_json()
+    if not mt5_manager.connect(creds):
+        return jsonify({"error": "MT5 connection failed."}), 503
     symbols = [s.name for s in mt5.symbols_get() if s.visible]
     return jsonify(symbols)
 
 @app.route('/api/get_chart_data', methods=['POST'])
 @mt5_required
 def get_chart_data():
+    print("\n--- [API LOG] /api/get_chart_data endpoint hit ---")
     try:
         creds = request.get_json()
         symbol = creds.get('symbol')
         timeframe_str = creds.get('timeframe')
+        print(f"[API LOG] Request Params: Symbol='{symbol}', Timeframe='{timeframe_str}'")
+
+        # Ensure connection with the provided credentials before proceeding
+        if not mt5_manager.connect(creds):
+            print("[API LOG] ERROR: MT5 connection failed.")
+            return jsonify({"error": "MT5 connection failed for chart data."}), 503
+        print("[API LOG] MT5 connection successful.")
+
         mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
+
         if rates is None:
+            print("[API LOG] ERROR: mt5.copy_rates_from_pos returned None.")
             return jsonify({"error": f"Could not get rates for {symbol}"}), 500
+
+        print(f"[API LOG] Fetched {len(rates)} rates from MT5.")
         chart_data = [format_bar_data(bar, timeframe_str) for bar in rates]
+        print(f"[API LOG] Sending {len(chart_data)} bars to frontend.")
         return jsonify(chart_data)
     except Exception as e:
+        print(f"[API LOG] CRITICAL ERROR in get_chart_data: {e}")
         return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
 def _run_single_timeframe_analysis(df, symbol):
