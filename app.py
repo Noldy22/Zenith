@@ -10,6 +10,7 @@ import threading
 import time
 import os
 from functools import wraps
+import socket # Import socket to get local IP
 
 # --- AI & Learning Imports ---
 from analysis import (
@@ -20,9 +21,32 @@ from analysis import (
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features
 from backtest import run_backtest
 
+# --- Dynamic Origin Configuration for CORS ---
+def get_local_ip():
+    """Finds the local IP address of the machine."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Doesn't even have to be reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1' # Default to localhost if unable to find IP
+    finally:
+        s.close()
+    return IP
+
+local_ip = get_local_ip()
+# Define allowed origins for CORS, including localhost and the machine's network IP
+allowed_origins = [
+    "http://localhost:3000",
+    f"http://{local_ip}:3000"
+]
+
 app = Flask(__name__)
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+# Apply CORS with the specific list of allowed origins
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+# Configure Socket.IO with the same origins for robust WebSocket connections
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
