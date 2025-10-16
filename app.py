@@ -48,6 +48,11 @@ CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 # Configure Socket.IO with the same origins for robust WebSocket connections
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
 
+print("--- Zenith Backend Configuration ---")
+print(f"Detected Local IP: {local_ip}")
+print(f"Allowed CORS Origins: {allowed_origins}")
+print("---------------------------------")
+
 # --- MT5 Connection Manager ---
 class MT5Manager:
     def __init__(self):
