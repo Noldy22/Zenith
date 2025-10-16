@@ -105,10 +105,26 @@ export default function ChartsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
     })
-    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
+    .then(res => {
+        if (!res.ok) {
+            // If response is not OK, get the error body and reject
+            return res.json().then(err => Promise.reject(err));
+        }
+        // If response is OK, clone it so we can log it and still use it
+        const clonedRes = res.clone();
+        clonedRes.json().then(data => {
+            console.log("--- [FRONTEND LOG] Raw data received from /api/get_chart_data ---");
+            console.log(`Received ${data.length} items.`);
+            console.log("Sample of received data:", data.slice(0, 5));
+            console.log("---------------------------------------------------------------");
+        });
+        return res.json();
+    })
     .then(data => { setChartData(data); })
     .catch(error => {
-      console.error("Failed to fetch from backend:", error);
+      console.error("--- [FRONTEND LOG] Error fetching chart data ---");
+      console.error(error);
+      console.log("-----------------------------------------------");
       showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
@@ -116,38 +132,43 @@ export default function ChartsPage() {
   }, [activeSymbol, activeTimeframe, showAlert]);
 
   useEffect(() => {
-    const fetchSettingsAndConnect = async () => {
-        try {
-            const response = await fetch(`${getBackendUrl()}/api/settings`);
-            const settings = await response.json();
+    const checkConnection = async () => {
+        // Use the definitive credentials from localStorage, not server settings
+        const storedCreds = localStorage.getItem('mt5_credentials');
+        if (storedCreds) {
+            try {
+                const credentials = JSON.parse(storedCreds);
+                setMt5Login(String(credentials.login));
+                setMt5Password(credentials.password);
+                setMt5Server(credentials.server);
+                setMt5TerminalPath(credentials.terminal_path);
 
-            if (settings && settings.mt5_credentials && settings.mt5_credentials.login) {
-                setMt5Login(settings.mt5_credentials.login);
-                setMt5Password(settings.mt5_credentials.password);
-                setMt5Server(settings.mt5_credentials.server);
-                setMt5TerminalPath(settings.mt5_credentials.terminal_path);
-
-                // This will trigger a connection attempt on the backend
+                // Attempt to connect and get symbols using the correct credentials
                 const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(settings.mt5_credentials)
+                    body: JSON.stringify(credentials)
                 });
 
                 if (symbolsResponse.ok) {
                     const newSymbols = await symbolsResponse.json();
                     setSymbols(newSymbols);
-                    setIsConnected(true);
+                    setIsConnected(true); // SUCCESS: Connection confirmed
                 } else {
+                    // This is a likely failure point if creds are bad
                     setIsConnected(false);
+                    console.error("Initial connection check failed, server might be down or credentials invalid.");
                 }
+            } catch (error) {
+                console.error("Error during initial connection check:", error);
+                setIsConnected(false);
             }
-        } catch (error) {
-            console.error("Failed to fetch settings:", error);
+        } else {
+            // No credentials stored, so definitely not connected.
             setIsConnected(false);
         }
     };
-    fetchSettingsAndConnect();
+    checkConnection();
   }, []);
 
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);
