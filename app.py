@@ -22,7 +22,7 @@ from backtest import run_backtest
 
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
@@ -411,4 +411,11 @@ if __name__ == '__main__':
         STATE.autotrade_running = True
         STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
         STATE.autotrade_thread.start()
-    socketio.run(app, host='0.0.0.0', port=5000)
+
+    # Use gevent WSGI server for production
+    from gevent.pywsgi import WSGIServer
+    from geventwebsocket.handler import WebSocketHandler
+
+    http_server = WSGIServer(('0.0.0.0', 5000), app, handler_class=WebSocketHandler)
+    print("Starting Gevent server on port 5000...")
+    http_server.serve_forever()
