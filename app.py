@@ -344,21 +344,32 @@ def get_all_symbols():
 @app.route('/api/get_chart_data', methods=['POST'])
 @mt5_required
 def get_chart_data():
+    print("\n--- [API LOG] /api/get_chart_data endpoint hit ---")
     try:
         creds = request.get_json()
-        # Ensure connection with the provided credentials before proceeding
-        if not mt5_manager.connect(creds):
-            return jsonify({"error": "MT5 connection failed for chart data."}), 503
-
         symbol = creds.get('symbol')
         timeframe_str = creds.get('timeframe')
+        print(f"[API LOG] Request Params: Symbol='{symbol}', Timeframe='{timeframe_str}'")
+
+        # Ensure connection with the provided credentials before proceeding
+        if not mt5_manager.connect(creds):
+            print("[API LOG] ERROR: MT5 connection failed.")
+            return jsonify({"error": "MT5 connection failed for chart data."}), 503
+        print("[API LOG] MT5 connection successful.")
+
         mt5_timeframe = TIMEFRAME_MAP.get(timeframe_str)
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, 200)
+
         if rates is None:
+            print("[API LOG] ERROR: mt5.copy_rates_from_pos returned None.")
             return jsonify({"error": f"Could not get rates for {symbol}"}), 500
+
+        print(f"[API LOG] Fetched {len(rates)} rates from MT5.")
         chart_data = [format_bar_data(bar, timeframe_str) for bar in rates]
+        print(f"[API LOG] Sending {len(chart_data)} bars to frontend.")
         return jsonify(chart_data)
     except Exception as e:
+        print(f"[API LOG] CRITICAL ERROR in get_chart_data: {e}")
         return jsonify({"error": f"An unexpected server error: {e}"}), 500
 
 def _run_single_timeframe_analysis(df, symbol):

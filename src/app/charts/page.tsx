@@ -105,10 +105,26 @@ export default function ChartsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
     })
-    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
+    .then(res => {
+        if (!res.ok) {
+            // If response is not OK, get the error body and reject
+            return res.json().then(err => Promise.reject(err));
+        }
+        // If response is OK, clone it so we can log it and still use it
+        const clonedRes = res.clone();
+        clonedRes.json().then(data => {
+            console.log("--- [FRONTEND LOG] Raw data received from /api/get_chart_data ---");
+            console.log(`Received ${data.length} items.`);
+            console.log("Sample of received data:", data.slice(0, 5));
+            console.log("---------------------------------------------------------------");
+        });
+        return res.json();
+    })
     .then(data => { setChartData(data); })
     .catch(error => {
-      console.error("Failed to fetch from backend:", error);
+      console.error("--- [FRONTEND LOG] Error fetching chart data ---");
+      console.error(error);
+      console.log("-----------------------------------------------");
       showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
