@@ -1,4 +1,5 @@
 import pandas as pd
+import pandas_ta as ta
 import numpy as np
 
 # --- UTILITY FUNCTIONS ---
@@ -278,16 +279,44 @@ def find_order_blocks(data, pivots):
     return bullish_obs[-2:], bearish_obs[-2:]
 
 def find_candlestick_patterns(data):
-    """Detects various candlestick patterns."""
+    """Detects various candlestick patterns using pandas-ta."""
     df = pd.DataFrame(data)
+
+    # Use the candlestick pattern detection function from pandas-ta
+    # This will scan for all available patterns
+    pattern_data = df.ta.cdl_pattern(name="all")
+
+    # Rename columns to be more descriptive
+    pattern_data.columns = [col.replace('CDL_', '') for col in pattern_data.columns]
+
     patterns = []
-    for i in range(2, len(df)):
-        c1, c2, c3 = df.iloc[i-2], df.iloc[i-1], df.iloc[i]
-        if c2['close'] < c2['open'] and c3['close'] > c3['open'] and c3['close'] > c2['open'] and c3['open'] < c2['close']:
-            patterns.append({'name': 'Bullish Engulfing', 'time': c3['time'], 'position': 'below', 'price': c3['low']})
-        if c2['close'] > c2['open'] and c3['close'] < c3['open'] and c3['close'] < c2['open'] and c3['open'] > c2['close']:
-            patterns.append({'name': 'Bearish Engulfing', 'time': c3['time'], 'position': 'above', 'price': c3['high']})
-    return patterns[-5:]
+    # Find the last 5 candles that indicated a pattern
+    # A value of 100 indicates a bullish pattern, -100 a bearish one, 0 no pattern
+    for i in range(len(pattern_data) - 5, len(pattern_data)):
+        row = pattern_data.iloc[i]
+        candle = df.iloc[i]
+
+        # Check for bullish patterns
+        bullish_patterns = row[row == 100]
+        for pattern_name in bullish_patterns.index:
+            patterns.append({
+                'name': f"Bullish {pattern_name}",
+                'time': candle['time'],
+                'position': 'below',
+                'price': candle['low']
+            })
+
+        # Check for bearish patterns
+        bearish_patterns = row[row == -100]
+        for pattern_name in bearish_patterns.index:
+            patterns.append({
+                'name': f"Bearish {pattern_name}",
+                'time': candle['time'],
+                'position': 'above',
+                'price': candle['high']
+            })
+
+    return patterns
 
 def get_trade_suggestion(analysis, risk_reward_ratio=2.0):
     """Generates a trade suggestion based on market structure and confluent zones."""
@@ -332,7 +361,7 @@ def calculate_confidence(analysis, suggestion):
         if any(z['low'] <= entry <= z['high'] for z in analysis.get('bullish_ob', [])): confluences += 1
         if any(z['low'] <= entry <= z['high'] for z in analysis.get('bullish_fvg', [])): confluences += 1
         if any(abs(level - entry) / entry < 0.001 for level in analysis.get('support', [])): confluences += 1
-        if any(p['name'] == 'Bullish Engulfing' for p in analysis.get('candlestick_patterns', [])): confluences += 1
+        if any('Bullish' in p['name'] for p in analysis.get('candlestick_patterns', [])): confluences += 1
         score += confluences * 15
 
     elif suggestion['action'] == 'Sell':
@@ -340,7 +369,7 @@ def calculate_confidence(analysis, suggestion):
         if any(z['low'] <= entry <= z['high'] for z in analysis.get('bearish_ob', [])): confluences += 1
         if any(z['low'] <= entry <= z['high'] for z in analysis.get('bearish_fvg', [])): confluences += 1
         if any(abs(level - entry) / entry < 0.001 for level in analysis.get('resistance', [])): confluences += 1
-        if any(p['name'] == 'Bearish Engulfing' for p in analysis.get('candlestick_patterns', [])): confluences += 1
+        if any('Bearish' in p['name'] for p in analysis.get('candlestick_patterns', [])): confluences += 1
         score += confluences * 15
 
     return min(score, 95)
