@@ -401,8 +401,13 @@ def generate_market_narrative(analysis):
 
     if buy_liq_prices:
         narrative['levels_body'].append(f"Buy-side liquidity is targeting the equal highs around {min(buy_liq_prices):.5f}.")
+    else:
+        narrative['levels_body'].append("No significant buy-side liquidity pools identified.")
+
     if sell_liq_prices:
         narrative['levels_body'].append(f"Sell-side liquidity is targeting the equal lows around {max(sell_liq_prices):.5f}.")
+    else:
+        narrative['levels_body'].append("No significant sell-side liquidity pools identified.")
 
     if structure == 'Uptrend':
         narrative['prediction_body'] = "The AI expects the price to continue higher, likely targeting buy-side liquidity after a potential pullback into nearby demand zones or FVGs."
