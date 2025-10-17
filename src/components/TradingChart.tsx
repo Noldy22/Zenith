@@ -100,30 +100,35 @@ export const TradingChart = (props: {
         const drawRectangles = () => {
             if (!ctx) return;
 
-            const chartWidth = chartContainerRef.current?.clientWidth ?? 0;
-            const chartHeight = chartContainerRef.current?.clientHeight ?? 0;
-            canvas.width = chartWidth;
-            canvas.height = chartHeight;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            try {
+                const chartWidth = chartContainerRef.current?.clientWidth ?? 0;
+                const chartHeight = chartContainerRef.current?.clientHeight ?? 0;
+                canvas.width = chartWidth;
+                canvas.height = chartHeight;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            const timeScale = chart.timeScale();
-            const lastVisibleTime = timeScale.getVisibleRange()?.to;
-            if (!lastVisibleTime) return;
+                const timeScale = chart.timeScale();
+                const lastVisibleTime = timeScale.getVisibleRange()?.to;
+                if (!lastVisibleTime) return;
 
-            const drawZone = (zone: Zone, color: string) => {
-                const startX = timeScale.timeToCoordinate(zone.time);
-                const endX = timeScale.timeToCoordinate(lastVisibleTime);
-                const topY = candlestickSeries.priceToCoordinate(zone.high);
-                const bottomY = candlestickSeries.priceToCoordinate(zone.low);
+                const drawZone = (zone: Zone, color: string) => {
+                    // Defensively check priceToCoordinate as well, as it can be null if price is out of view
+                    const topY = candlestickSeries.priceToCoordinate(zone.high);
+                    const bottomY = candlestickSeries.priceToCoordinate(zone.low);
+                    const startX = timeScale.timeToCoordinate(zone.time);
+                    const endX = timeScale.timeToCoordinate(lastVisibleTime);
 
-                if (startX === null || endX === null || topY === null || bottomY === null) return;
+                    if (startX === null || endX === null || topY === null || bottomY === null) return;
 
-                ctx.fillStyle = color;
-                ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
-            };
+                    ctx.fillStyle = color;
+                    ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+                };
 
-            bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)'));
-            bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)'));
+                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)'));
+                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)'));
+            } catch (e) {
+                console.warn("Could not draw rectangles, likely because chart is unmounting or has no data.", e);
+            }
         };
 
         // --- MARKERS & LINES ---
