@@ -212,8 +212,7 @@ def find_order_blocks(data, pivots):
     A high-probability OB has:
     1. A liquidity sweep of a prior swing high/low.
     2. A displacement (strong move) that causes a Break of Structure (BOS).
-    3. An FVG created by the displacement.
-    4. Has not yet been mitigated.
+    3. Has not yet been mitigated.
     """
     df = pd.DataFrame(data)
     bullish_obs, bearish_obs = [], []
@@ -223,64 +222,72 @@ def find_order_blocks(data, pivots):
 
     # Find Bearish OBs
     for i in range(1, len(swing_highs)):
-        # 1. Liquidity Sweep: Current high sweeps the previous high
-        if swing_highs[i]['price'] > swing_highs[i-1]['price']:
-            # 2. Break of Structure: A subsequent low breaks a previous low
-            subsequent_lows = [sl for sl in swing_lows if sl['index'] > swing_highs[i]['index']]
-            if not subsequent_lows: continue
+        sweep_high = swing_highs[i]
+        prev_high = swing_highs[i-1]
+
+        # 1. Liquidity Sweep
+        if sweep_high['price'] > prev_high['price']:
+            # Find the candle that performed the sweep
+            sweep_candle_index = sweep_high['index']
+
+            # 2. Break of Structure: Find a subsequent low that breaks a *previous* low
+            # The low being broken should exist *before* the sweep high for a valid BOS
+            relevant_lows = [sl for sl in swing_lows if sl['index'] < sweep_candle_index]
+            if not relevant_lows: continue
 
             bos_happened = False
-            for sl in subsequent_lows:
-                if sl['price'] < swing_highs[i-1]['price']: # Simplified BOS condition
+            for subsequent_low in [sl for sl in swing_lows if sl['index'] > sweep_candle_index]:
+                if any(subsequent_low['price'] < rl['price'] for rl in relevant_lows):
                     bos_happened = True
                     break
             if not bos_happened: continue
 
             # Find the OB candle (last up-candle before the sweep)
-            for j in range(swing_highs[i]['index'], swing_highs[i-1]['index'], -1):
+            for j in range(sweep_candle_index, prev_high['index'], -1):
                 if df.iloc[j]['close'] > df.iloc[j]['open']:
                     ob_candle = df.iloc[j]
-                    # Ensure time is a standard Python int
                     ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': int(ob_candle['time']), 'mitigated': False}
 
-                    # 4. Mitigation Check
-                    for k in range(swing_highs[i]['index'] + 1, len(df)):
+                    # 3. Mitigation Check
+                    for k in range(sweep_candle_index + 1, len(df)):
                         if df.iloc[k]['high'] >= ob_zone['low']:
                             ob_zone['mitigated'] = True
                             break
-
                     if not ob_zone['mitigated']:
                         bearish_obs.append(ob_zone)
                     break
 
     # Find Bullish OBs (logic is inverse of bearish)
     for i in range(1, len(swing_lows)):
+        sweep_low = swing_lows[i]
+        prev_low = swing_lows[i-1]
+
         # 1. Liquidity Sweep
-        if swing_lows[i]['price'] < swing_lows[i-1]['price']:
+        if sweep_low['price'] < prev_low['price']:
+            sweep_candle_index = sweep_low['index']
+
             # 2. Break of Structure
-            subsequent_highs = [sh for sh in swing_highs if sh['index'] > swing_lows[i]['index']]
-            if not subsequent_highs: continue
+            relevant_highs = [sh for sh in swing_highs if sh['index'] < sweep_candle_index]
+            if not relevant_highs: continue
 
             bos_happened = False
-            for sh in subsequent_highs:
-                if sh['price'] > swing_lows[i-1]['price']:
+            for subsequent_high in [sh for sh in swing_highs if sh['index'] > sweep_candle_index]:
+                 if any(subsequent_high['price'] > rh['price'] for rh in relevant_highs):
                     bos_happened = True
                     break
             if not bos_happened: continue
 
             # Find OB candle
-            for j in range(swing_lows[i]['index'], swing_lows[i-1]['index'], -1):
+            for j in range(sweep_candle_index, prev_low['index'], -1):
                 if df.iloc[j]['close'] < df.iloc[j]['open']:
                     ob_candle = df.iloc[j]
-                    # Ensure time is a standard Python int
                     ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': int(ob_candle['time']), 'mitigated': False}
 
-                    # 4. Mitigation Check
-                    for k in range(swing_lows[i]['index'] + 1, len(df)):
+                    # 3. Mitigation Check
+                    for k in range(sweep_candle_index + 1, len(df)):
                         if df.iloc[k]['low'] <= ob_zone['high']:
                             ob_zone['mitigated'] = True
                             break
-
                     if not ob_zone['mitigated']:
                         bullish_obs.append(ob_zone)
                     break
