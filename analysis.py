@@ -35,21 +35,21 @@ def _merge_zones(zones, tolerance_multiplier=0.5):
 def find_levels(data, window=5):
     """Finds support and resistance levels using pivot points."""
     df = pd.DataFrame(data)
-    highs = df['high']
-    lows = df['low']
     
     pivots = []
     # Identify all pivot highs and lows
     for i in range(window, len(df) - window):
-        is_low = all(lows[i] < lows[i - j] for j in range(1, window + 1)) and \
-                 all(lows[i] < lows[i + j] for j in range(1, window + 1))
+        is_low = all(df['low'][i] < df['low'][i - j] for j in range(1, window + 1)) and \
+                 all(df['low'][i] < df['low'][i + j] for j in range(1, window + 1))
         if is_low:
-            pivots.append({'type': 'low', 'price': lows[i], 'index': i})
+            # Include the timestamp ('time') in the pivot data
+            pivots.append({'type': 'low', 'price': df['low'][i], 'index': i, 'time': df['time'][i]})
 
-        is_high = all(highs[i] > highs[i - j] for j in range(1, window + 1)) and \
-                  all(highs[i] > highs[i + j] for j in range(1, window + 1))
+        is_high = all(df['high'][i] > df['high'][i - j] for j in range(1, window + 1)) and \
+                  all(df['high'][i] > df['high'][i + j] for j in range(1, window + 1))
         if is_high:
-            pivots.append({'type': 'high', 'price': highs[i], 'index': i})
+            # Include the timestamp ('time') in the pivot data
+            pivots.append({'type': 'high', 'price': df['high'][i], 'index': i, 'time': df['time'][i]})
     
     pivots.sort(key=lambda x: x['index'])
     
@@ -125,45 +125,47 @@ def find_sd_zones(data, lookback=50, threshold_multiplier=1.5):
 def find_liquidity_pools(pivots, lookback=30, tolerance_percent=0.05):
     """
     Identifies liquidity pools by finding clusters of "equal" highs and lows.
-    These are areas where price has touched a similar level multiple times.
+    Returns the actual pivot points (including time) for marking on the chart.
     """
-    swing_highs = sorted([p['price'] for p in pivots if p['type'] == 'high'], reverse=True)
-    swing_lows = sorted([p['price'] for p in pivots if p['type'] == 'low'])
+    # Keep the pivot objects, not just the prices
+    swing_highs = sorted([p for p in pivots if p['type'] == 'high'], key=lambda p: p['price'], reverse=True)
+    swing_lows = sorted([p for p in pivots if p['type'] == 'low'], key=lambda p: p['price'])
 
     buy_side_pools, sell_side_pools = [], []
-    
+
     # Find Buy-Side Liquidity Pools (Equal Highs)
     if len(swing_highs) > 1:
-        # Group highs that are close to each other
         groups = []
         current_group = [swing_highs[0]]
         for i in range(1, len(swing_highs)):
-            tolerance = swing_highs[i] * (tolerance_percent / 100)
-            if abs(swing_highs[i] - current_group[-1]) <= tolerance:
+            tolerance = current_group[-1]['price'] * (tolerance_percent / 100)
+            if abs(swing_highs[i]['price'] - current_group[-1]['price']) <= tolerance:
                 current_group.append(swing_highs[i])
             else:
                 if len(current_group) > 1:
-                    groups.append(np.mean(current_group))
+                    groups.extend(current_group) # Add all pivots in the group
                 current_group = [swing_highs[i]]
         if len(current_group) > 1:
-            groups.append(np.mean(current_group))
-        buy_side_pools = groups
+            groups.extend(current_group)
+        # We only want the *points* for markers, not an average line
+        buy_side_pools = [{'time': p['time'], 'price': p['price']} for p in groups]
+
 
     # Find Sell-Side Liquidity Pools (Equal Lows)
     if len(swing_lows) > 1:
         groups = []
         current_group = [swing_lows[0]]
         for i in range(1, len(swing_lows)):
-            tolerance = swing_lows[i] * (tolerance_percent / 100)
-            if abs(swing_lows[i] - current_group[-1]) <= tolerance:
+            tolerance = current_group[-1]['price'] * (tolerance_percent / 100)
+            if abs(swing_lows[i]['price'] - current_group[-1]['price']) <= tolerance:
                 current_group.append(swing_lows[i])
             else:
                 if len(current_group) > 1:
-                    groups.append(np.mean(current_group))
+                    groups.extend(current_group)
                 current_group = [swing_lows[i]]
         if len(current_group) > 1:
-            groups.append(np.mean(current_group))
-        sell_side_pools = groups
+            groups.extend(current_group)
+        sell_side_pools = [{'time': p['time'], 'price': p['price']} for p in groups]
 
     return buy_side_pools, sell_side_pools
 
@@ -327,27 +329,29 @@ def get_trade_suggestion(analysis, risk_reward_ratio=2.0):
         for zone_type in ['demand_zones', 'bullish_ob', 'bullish_fvg']:
             for zone in analysis.get(zone_type, []):
                 if zone['low'] <= current_price <= zone['high']:
-                    sl = zone['low'] * 0.999 # Place SL slightly below the zone
+                    sl = zone['low'] * 0.999  # Place SL slightly below the zone
                     risk = current_price - sl
                     # Target the next buy-side liquidity pool
-                    tp_target = min([l for l in analysis.get('buy_side_liquidity', []) if l > current_price], default=None)
+                    buy_liq_prices = [p['price'] for p in analysis.get('buy_side_liquidity', []) if p['price'] > current_price]
+                    tp_target = min(buy_liq_prices, default=None)
                     tp = tp_target if tp_target else current_price + (risk * risk_reward_ratio)
                     return {"action": "Buy", "entry": current_price, "sl": sl, "tp": tp, "reason": f"Uptrend, price retesting {zone_type.replace('_', ' ')}."}
-        return {"action": "Neutral", "reason": "Uptrend, but not in a key support zone."}
+        return {"action": "Neutral", "reason": "Uptrend, but not in a key support zone.", "entry": None, "sl": None, "tp": None}
 
     if market_structure == 'Downtrend':
         for zone_type in ['supply_zones', 'bearish_ob', 'bearish_fvg']:
             for zone in analysis.get(zone_type, []):
                 if zone['low'] <= current_price <= zone['high']:
-                    sl = zone['high'] * 1.001 # Place SL slightly above the zone
+                    sl = zone['high'] * 1.001  # Place SL slightly above the zone
                     risk = sl - current_price
                     # Target the next sell-side liquidity pool
-                    tp_target = max([l for l in analysis.get('sell_side_liquidity', []) if l < current_price], default=None)
+                    sell_liq_prices = [p['price'] for p in analysis.get('sell_side_liquidity', []) if p['price'] < current_price]
+                    tp_target = max(sell_liq_prices, default=None)
                     tp = tp_target if tp_target else current_price - (risk * risk_reward_ratio)
                     return {"action": "Sell", "entry": current_price, "sl": sl, "tp": tp, "reason": f"Downtrend, price retesting {zone_type.replace('_', ' ')}."}
-        return {"action": "Neutral", "reason": "Downtrend, but not in a key resistance zone."}
+        return {"action": "Neutral", "reason": "Downtrend, but not in a key resistance zone.", "entry": None, "sl": None, "tp": None}
 
-    return {"action": "Neutral", "reason": "Ranging market, no clear edge."}
+    return {"action": "Neutral", "reason": "Ranging market, no clear edge.", "entry": None, "sl": None, "tp": None}
 
 def calculate_confidence(analysis, suggestion):
     """Calculates a confidence score based on confluence."""
@@ -383,15 +387,22 @@ def generate_market_narrative(analysis):
     narrative = {
         "overview": f"Market Overview for {symbol} at {price:.5f}",
         "structure_title": "Market Structure", "structure_body": reason,
-        "liquidity_title": "Liquidity Analysis", "liquidity_body": "",
+        "levels_title": "Key Levels & Liquidity",
+        "levels_body": [],
         "prediction_title": "AI Prediction", "prediction_body": ""
     }
 
     buy_liq = analysis.get('buy_side_liquidity', [])
     sell_liq = analysis.get('sell_side_liquidity', [])
 
-    if buy_liq: narrative['liquidity_body'] += f"Buy-side liquidity targets are seen above {min(buy_liq):.5f}. "
-    if sell_liq: narrative['liquidity_body'] += f"Sell-side liquidity targets are seen below {max(sell_liq):.5f}."
+    # Extract just the prices for the narrative text
+    buy_liq_prices = [p['price'] for p in buy_liq]
+    sell_liq_prices = [p['price'] for p in sell_liq]
+
+    if buy_liq_prices:
+        narrative['levels_body'].append(f"Buy-side liquidity is targeting the equal highs around {min(buy_liq_prices):.5f}.")
+    if sell_liq_prices:
+        narrative['levels_body'].append(f"Sell-side liquidity is targeting the equal lows around {max(sell_liq_prices):.5f}.")
 
     if structure == 'Uptrend':
         narrative['prediction_body'] = "The AI expects the price to continue higher, likely targeting buy-side liquidity after a potential pullback into nearby demand zones or FVGs."

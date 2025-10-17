@@ -27,9 +27,9 @@ const brokerPaths = {
 };
 
 interface Zone { high: number; low: number; time: Time; }
+interface LiquidityPoint { time: Time; price: number; } // New interface for Liquidity
 interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
 interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
-// **UPDATED**: Narrative is now a structured object
 interface Narrative {
   overview: string;
   structure_title: string;
@@ -42,9 +42,11 @@ interface Narrative {
 interface AnalysisResult {
   support: number[]; resistance: number[]; demand_zones: Zone[];
   supply_zones: Zone[]; bullish_ob: Zone[]; bearish_ob: Zone[];
-  bullish_fvg: Zone[]; bearish_fvg: Zone[]; // Added FVGs
+  bullish_fvg: Zone[]; bearish_fvg: Zone[];
+  buy_side_liquidity: LiquidityPoint[]; // Updated type
+  sell_side_liquidity: LiquidityPoint[]; // Updated type
   candlestick_patterns: CandlestickPattern[]; suggestion: Suggestion;
-  narrative: Narrative; // Updated type
+  narrative: Narrative;
   confidence: number; precautions: string[];
   predicted_success_rate?: string;
 }
