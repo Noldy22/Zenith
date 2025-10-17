@@ -390,10 +390,44 @@ def _run_single_timeframe_analysis(df, symbol):
 
     return analysis
 
+@app.route('/api/analyze_single_timeframe', methods=['POST'])
+@mt5_required
+def analyze_single_timeframe():
+    """New endpoint for analyzing just the currently viewed timeframe."""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        timeframe = data.get('timeframe') # e.g., 'H1'
+
+        if not symbol or not timeframe or timeframe not in TIMEFRAME_MAP:
+            return jsonify({"error": "Invalid symbol or timeframe provided."}), 400
+
+        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[timeframe], 0, 200)
+        if rates is None or len(rates) < 20:
+            return jsonify({"error": f"Could not fetch enough data for {symbol} on {timeframe}."}), 400
+
+        chart_data = [format_bar_data(bar, timeframe) for bar in rates]
+        df = pd.DataFrame(chart_data)
+
+        # Run the analysis and return the raw results
+        analysis_result = _run_single_timeframe_analysis(df, symbol)
+
+        # Add some extra data for compatibility with the frontend state
+        analysis_result['precautions'] = [
+            "This is an AI-generated analysis, not financial advice.",
+            "Always perform your own due diligence before trading."
+        ]
+
+        return jsonify(analysis_result)
+
+    except Exception as e:
+        print(f"Single-TF Analysis Error: {e}")
+        return jsonify({"error": "Error during single timeframe analysis."}), 500
+
 @app.route('/api/analyze_multi_timeframe', methods=['POST'])
 @mt5_required
 def analyze_multi_timeframe():
-    """New endpoint for multi-timeframe analysis based on trading style."""
+    """Endpoint for multi-timeframe analysis based on trading style (used for auto-trading)."""
     try:
         data = request.get_json()
         style = data.get('trading_style', 'DAY_TRADING').upper()
@@ -415,8 +449,6 @@ def analyze_multi_timeframe():
         # --- Multi-Timeframe Confluence Logic ---
         suggestions = [a['suggestion']['action'] for a in analyses.values()]
 
-        # **FIX**: Find the first available timeframe in the analysis results
-        # This prevents an error if the primary timeframe (e.g., M15) failed but others (H1) succeeded.
         available_tfs = [tf for tf in timeframes if tf in analyses]
         if not available_tfs:
             return jsonify({"error": "Data could not be fetched for any relevant timeframe."}), 400
@@ -443,9 +475,9 @@ def analyze_multi_timeframe():
         return jsonify({
             "final_action": final_action,
             "final_confidence": final_confidence,
-            "primary_suggestion": primary_suggestion, # Contains SL/TP from primary TF
+            "primary_suggestion": primary_suggestion,
             "narratives": full_narrative,
-            "individual_analyses": analyses # For detailed view on frontend
+            "individual_analyses": analyses
         })
 
     except Exception as e:

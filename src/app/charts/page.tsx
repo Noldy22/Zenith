@@ -281,35 +281,22 @@ export default function ChartsPage() {
     setAnalysisResult(null);
 
     const credentials = JSON.parse(storedCreds);
+    const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
 
-    // Using the new multi-timeframe endpoint
-    fetch(`${getBackendUrl()}/api/analyze_multi_timeframe`, {
+    // **NEW**: Call the single timeframe analysis endpoint for the "Analyze" button
+    fetch(`${getBackendUrl()}/api/analyze_single_timeframe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             credentials,
             symbol: activeSymbol,
-            trading_style: 'DAY_TRADING' // Or get this from settings
+            timeframe: timeframeValue,
         }),
     })
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
     .then(data => {
-        // We need to adapt the new response format to the old state structure
-        // For now, we'll just display the primary suggestion's narrative
-        const primaryTimeframe = Object.keys(data.individual_analyses)[0];
-        const primaryAnalysis = data.individual_analyses[primaryTimeframe];
-
-        const adaptedResult = {
-            ...primaryAnalysis,
-            confidence: data.final_confidence === 'HIGH' ? 90 : (data.final_confidence === 'MEDIUM' ? 65 : 40),
-            suggestion: {
-                ...data.primary_suggestion,
-                reason: `Confidence: ${data.final_confidence}. Action: ${data.final_action}. ` + data.primary_suggestion.reason,
-            },
-            narrative: data.narratives[primaryTimeframe],
-            precautions: ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."],
-        };
-        setAnalysisResult(adaptedResult);
+        // The new endpoint returns the exact structure needed for the state
+        setAnalysisResult(data);
     })
     .catch(error => showAlert(`Analysis failed: ${error.error || "An unknown error."}`, 'error'))
     .finally(() => setIsAnalyzing(false));

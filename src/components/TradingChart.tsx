@@ -124,8 +124,12 @@ export const TradingChart = (props: {
                     ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
                 };
 
-                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)'));
-                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)'));
+            bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
+            bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red for Bearish OB
+
+            // Also draw FVGs for diagnosis
+            bullishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(0, 150, 255, 0.2)')); // Blue for Bullish FVG
+            bearishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(128, 0, 128, 0.2)')); // Purple for Bearish FVG
             } catch (e) {
                 console.warn("Could not draw rectangles, likely because chart is unmounting or has no data.", e);
             }
