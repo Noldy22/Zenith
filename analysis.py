@@ -42,14 +42,14 @@ def find_levels(data, window=5):
         is_low = all(df['low'][i] < df['low'][i - j] for j in range(1, window + 1)) and \
                  all(df['low'][i] < df['low'][i + j] for j in range(1, window + 1))
         if is_low:
-            # Include the timestamp ('time') in the pivot data
-            pivots.append({'type': 'low', 'price': df['low'][i], 'index': i, 'time': df['time'][i]})
+            # Include the timestamp ('time') in the pivot data, ensuring it's a standard Python int
+            pivots.append({'type': 'low', 'price': df['low'][i], 'index': i, 'time': int(df['time'][i])})
 
         is_high = all(df['high'][i] > df['high'][i - j] for j in range(1, window + 1)) and \
                   all(df['high'][i] > df['high'][i + j] for j in range(1, window + 1))
         if is_high:
-            # Include the timestamp ('time') in the pivot data
-            pivots.append({'type': 'high', 'price': df['high'][i], 'index': i, 'time': df['time'][i]})
+            # Include the timestamp ('time') in the pivot data, ensuring it's a standard Python int
+            pivots.append({'type': 'high', 'price': df['high'][i], 'index': i, 'time': int(df['time'][i])})
     
     pivots.sort(key=lambda x: x['index'])
     
@@ -98,7 +98,8 @@ def find_sd_zones(data, lookback=50, threshold_multiplier=1.5):
         is_explosive = explosive_candle['range'] > avg_range * threshold_multiplier
 
         if is_base and is_explosive:
-            zone_data = {'high': base_candle['high'], 'low': base_candle['low'], 'time': base_candle['time'], 'mitigated': False}
+            # Ensure time is a standard Python int
+            zone_data = {'high': base_candle['high'], 'low': base_candle['low'], 'time': int(base_candle['time']), 'mitigated': False}
 
             # Check for mitigation
             for k in range(i + 2, len(df)):
@@ -148,7 +149,8 @@ def find_liquidity_pools(pivots, lookback=30, tolerance_percent=0.05):
         if len(current_group) > 1:
             groups.extend(current_group)
         # We only want the *points* for markers, not an average line
-        buy_side_pools = [{'time': p['time'], 'price': p['price']} for p in groups]
+        # Ensure time is a standard Python int
+        buy_side_pools = [{'time': int(p['time']), 'price': p['price']} for p in groups]
 
 
     # Find Sell-Side Liquidity Pools (Equal Lows)
@@ -165,7 +167,8 @@ def find_liquidity_pools(pivots, lookback=30, tolerance_percent=0.05):
                 current_group = [swing_lows[i]]
         if len(current_group) > 1:
             groups.extend(current_group)
-        sell_side_pools = [{'time': p['time'], 'price': p['price']} for p in groups]
+        # Ensure time is a standard Python int
+        sell_side_pools = [{'time': int(p['time']), 'price': p['price']} for p in groups]
 
     return buy_side_pools, sell_side_pools
 
@@ -179,7 +182,8 @@ def find_fvgs(data):
 
         # Bullish FVG (gap between c1 high and c3 low)
         if c1['high'] < c3['low']:
-            fvg_zone = {'high': c3['low'], 'low': c1['high'], 'time': c2['time'], 'mitigated': False}
+            # Ensure time is a standard Python int
+            fvg_zone = {'high': c3['low'], 'low': c1['high'], 'time': int(c2['time']), 'mitigated': False}
             # Check if any subsequent candle has filled this gap
             for j in range(i + 1, len(df)):
                 if df.iloc[j]['low'] <= fvg_zone['high']:
@@ -190,7 +194,8 @@ def find_fvgs(data):
 
         # Bearish FVG (gap between c1 low and c3 high)
         if c1['low'] > c3['high']:
-            fvg_zone = {'high': c1['low'], 'low': c3['high'], 'time': c2['time'], 'mitigated': False}
+            # Ensure time is a standard Python int
+            fvg_zone = {'high': c1['low'], 'low': c3['high'], 'time': int(c2['time']), 'mitigated': False}
             # Check if any subsequent candle has filled this gap
             for j in range(i + 1, len(df)):
                 if df.iloc[j]['high'] >= fvg_zone['low']:
@@ -235,7 +240,8 @@ def find_order_blocks(data, pivots):
             for j in range(swing_highs[i]['index'], swing_highs[i-1]['index'], -1):
                 if df.iloc[j]['close'] > df.iloc[j]['open']:
                     ob_candle = df.iloc[j]
-                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time'], 'mitigated': False}
+                    # Ensure time is a standard Python int
+                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': int(ob_candle['time']), 'mitigated': False}
 
                     # 4. Mitigation Check
                     for k in range(swing_highs[i]['index'] + 1, len(df)):
@@ -266,7 +272,8 @@ def find_order_blocks(data, pivots):
             for j in range(swing_lows[i]['index'], swing_lows[i-1]['index'], -1):
                 if df.iloc[j]['close'] < df.iloc[j]['open']:
                     ob_candle = df.iloc[j]
-                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': ob_candle['time'], 'mitigated': False}
+                    # Ensure time is a standard Python int
+                    ob_zone = {'high': ob_candle['high'], 'low': ob_candle['low'], 'time': int(ob_candle['time']), 'mitigated': False}
 
                     # 4. Mitigation Check
                     for k in range(swing_lows[i]['index'] + 1, len(df)):
@@ -303,7 +310,7 @@ def find_candlestick_patterns(data):
         for pattern_name in bullish_patterns.index:
             patterns.append({
                 'name': f"Bullish {pattern_name}",
-                'time': candle['time'],
+                'time': int(candle['time']), # Ensure time is a standard Python int
                 'position': 'below',
                 'price': candle['low']
             })
@@ -313,7 +320,7 @@ def find_candlestick_patterns(data):
         for pattern_name in bearish_patterns.index:
             patterns.append({
                 'name': f"Bearish {pattern_name}",
-                'time': candle['time'],
+                'time': int(candle['time']), # Ensure time is a standard Python int
                 'position': 'above',
                 'price': candle['high']
             })

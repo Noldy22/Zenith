@@ -450,8 +450,7 @@ def analyze_multi_timeframe():
 
     except Exception as e:
         print(f"Multi-TF Analysis Error: {e}")
-        # Return the specific error for debugging
-        return jsonify({"error": f"Detailed error: {str(e)}"}), 500
+        return jsonify({"error": "Error during multi-timeframe analysis."}), 500
 
 @app.route('/api/run_backtest', methods=['POST'])
 def handle_backtest():
