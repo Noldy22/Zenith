@@ -10,6 +10,12 @@ interface Zone {
     time: Time;
 }
 
+// **NEW** Interface for liquidity points
+interface LiquidityPoint {
+    time: Time;
+    price: number;
+}
+
 interface Suggestion {
     action: 'Buy' | 'Sell' | 'Neutral';
     entry: number | null;
@@ -35,8 +41,8 @@ export const TradingChart = (props: {
     bearishOBs?: Zone[];
     bullishFVGs?: Zone[];
     bearishFVGs?: Zone[];
-    buySideLiquidity?: number[];
-    sellSideLiquidity?: number[];
+    buySideLiquidity?: LiquidityPoint[]; // Changed from number[]
+    sellSideLiquidity?: LiquidityPoint[]; // Changed from number[]
     suggestion?: Suggestion;
     candlestickPatterns?: CandlestickPattern[];
 }) => {
@@ -80,27 +86,85 @@ export const TradingChart = (props: {
         }
 
         const priceLines: IPriceLine[] = [];
+        const drawnRectangles: { remove: () => void }[] = [];
 
-        // This function draws all the extra lines on the chart.
-        const drawLines = () => {
+        // --- CANVAS SETUP FOR RECTANGLES ---
+        const canvas = document.createElement('canvas');
+        canvas.style.position = 'absolute';
+        canvas.style.left = '0';
+        canvas.style.top = '0';
+        canvas.style.pointerEvents = 'none'; // Allow mouse events to pass through
+        chartContainerRef.current.appendChild(canvas);
+        const ctx = canvas.getContext('2d');
+
+        const drawRectangles = () => {
+            if (!ctx) return;
+
+            try {
+                const chartWidth = chartContainerRef.current?.clientWidth ?? 0;
+                const chartHeight = chartContainerRef.current?.clientHeight ?? 0;
+                canvas.width = chartWidth;
+                canvas.height = chartHeight;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                const timeScale = chart.timeScale();
+                const lastVisibleTime = timeScale.getVisibleRange()?.to;
+                if (!lastVisibleTime) return;
+
+                const drawZone = (zone: Zone, color: string) => {
+                    // Defensively check priceToCoordinate as well, as it can be null if price is out of view
+                    const topY = candlestickSeries.priceToCoordinate(zone.high);
+                    const bottomY = candlestickSeries.priceToCoordinate(zone.low);
+                    const startX = timeScale.timeToCoordinate(zone.time);
+                    const endX = timeScale.timeToCoordinate(lastVisibleTime);
+
+                    if (startX === null || endX === null || topY === null || bottomY === null) return;
+
+                    ctx.fillStyle = color;
+                    ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+                };
+
+                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)'));
+                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)'));
+            } catch (e) {
+                console.warn("Could not draw rectangles, likely because chart is unmounting or has no data.", e);
+            }
+        };
+
+        // --- MARKERS & LINES ---
+        const drawVisuals = () => {
+            // Clear old visuals
             priceLines.forEach(line => candlestickSeries.removePriceLine(line));
             priceLines.length = 0;
+            candlestickSeries.setMarkers([]);
 
-            buySideLiquidity?.forEach(l => priceLines.push(candlestickSeries.createPriceLine({ price: l, color: '#32CD32', lineWidth: 1, lineStyle: LineStyle.Dotted, title: '$ BSL' })));
-            sellSideLiquidity?.forEach(l => priceLines.push(candlestickSeries.createPriceLine({ price: l, color: '#FF4500', lineWidth: 1, lineStyle: LineStyle.Dotted, title: '$ SSL' })));
+            // Draw Liquidity Markers
+            const bslMarkers = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar', color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
+            const sslMarkers = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar', color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
+            // Draw Pattern Markers
+            const patternMarkers = (candlestickPatterns || []).map(p => ({
+                time: p.time,
+                position: p.position === 'above' ? 'aboveBar' : 'belowBar',
+                color: p.name.includes('Bullish') ? '#26a69a' : '#ef5350',
+                shape: 'arrowUp', // Use arrows to point to the candle
+                text: p.name.replace('Bullish ', 'B_').replace('Bearish ', 'B_').substring(0, 15) // Shorten name
+            }));
+
+            candlestickSeries.setMarkers([...bslMarkers, ...sslMarkers, ...patternMarkers].sort((a, b) => a.time - b.time));
+
+            // Draw Suggestion Lines
             if (suggestion && suggestion.action !== 'Neutral' && suggestion.entry && suggestion.sl && suggestion.tp) {
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.entry, color: '#FFFFFF', lineWidth: 2, lineStyle: LineStyle.Solid, title: 'Entry' }));
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.sl, color: '#ef5350', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Stop Loss' }));
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.tp, color: '#26a69a', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Take Profit' }));
             }
+
+            // Draw rectangles on the canvas
+            drawRectangles();
         };
 
-        drawLines();
-
-        // NOTE: The complex zone drawing with a canvas overlay has been temporarily removed
-        // to fix the "Object is disposed" crash. This was the likely source of the race condition.
-        // The core functionality (candlesticks, lines) is now stable.
+        drawVisuals();
 
         // --- 3. EVENT LISTENERS ---
         const handleResize = () => {
@@ -108,14 +172,24 @@ export const TradingChart = (props: {
                 width: chartContainerRef.current?.clientWidth,
                 height: chartContainerRef.current?.clientHeight,
             });
+            // Redraw rectangles on resize
+            drawRectangles();
         };
+
+        // Redraw rectangles when the visible time range changes (pan/zoom)
+        chart.timeScale().subscribeVisibleTimeRangeChange(drawRectangles);
 
         window.addEventListener('resize', handleResize);
 
         // --- 4. CLEANUP ---
         return () => {
             window.removeEventListener('resize', handleResize);
+            chart.timeScale().unsubscribeVisibleTimeRangeChange(drawRectangles);
             chart.remove();
+            // Remove the canvas from the DOM
+            if (chartContainerRef.current && canvas.parentNode === chartContainerRef.current) {
+                chartContainerRef.current.removeChild(canvas);
+            }
         };
 
     }, [

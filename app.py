@@ -414,7 +414,15 @@ def analyze_multi_timeframe():
 
         # --- Multi-Timeframe Confluence Logic ---
         suggestions = [a['suggestion']['action'] for a in analyses.values()]
-        primary_suggestion = analyses[timeframes[0]]['suggestion'] # Use lowest TF for SL/TP
+
+        # **FIX**: Find the first available timeframe in the analysis results
+        # This prevents an error if the primary timeframe (e.g., M15) failed but others (H1) succeeded.
+        available_tfs = [tf for tf in timeframes if tf in analyses]
+        if not available_tfs:
+            return jsonify({"error": "Data could not be fetched for any relevant timeframe."}), 400
+
+        primary_tf = available_tfs[0]
+        primary_suggestion = analyses[primary_tf]['suggestion']
 
         buy_signals = suggestions.count('Buy')
         sell_signals = suggestions.count('Sell')
