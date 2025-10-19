@@ -850,6 +850,40 @@ def analyze_single_timeframe():
         traceback.print_exc()
         return jsonify({"error": f"Error during single timeframe analysis: {e}"}), 500
 
+@app.route('/api/analyze_single_timeframe', methods=['POST'])
+@mt5_required
+def analyze_single_timeframe():
+    """New endpoint for analyzing just the currently viewed timeframe."""
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        timeframe = data.get('timeframe') # e.g., 'H1'
+
+        if not symbol or not timeframe or timeframe not in TIMEFRAME_MAP:
+            return jsonify({"error": "Invalid symbol or timeframe provided."}), 400
+
+        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[timeframe], 0, 200)
+        if rates is None or len(rates) < 20:
+            return jsonify({"error": f"Could not fetch enough data for {symbol} on {timeframe}."}), 400
+
+        chart_data = [format_bar_data(bar, timeframe) for bar in rates]
+        df = pd.DataFrame(chart_data)
+
+        # Run the analysis and return the raw results
+        analysis_result = _run_single_timeframe_analysis(df, symbol)
+
+        # Add some extra data for compatibility with the frontend state
+        analysis_result['precautions'] = [
+            "This is an AI-generated analysis, not financial advice.",
+            "Always perform your own due diligence before trading."
+        ]
+
+        return jsonify(analysis_result)
+
+    except Exception as e:
+        print(f"Single-TF Analysis Error: {e}")
+        return jsonify({"error": "Error during single timeframe analysis."}), 500
+
 @app.route('/api/analyze_multi_timeframe', methods=['POST'])
 @mt5_required
 def analyze_multi_timeframe():

@@ -27,9 +27,9 @@ const brokerPaths = {
 };
 
 interface Zone { high: number; low: number; time: Time; }
+interface LiquidityPoint { time: Time; price: number; } // New interface for Liquidity
 interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
 interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
-// **UPDATED**: Narrative is now a structured object
 interface Narrative {
   overview: string;
   structure_title: string;
@@ -42,9 +42,11 @@ interface Narrative {
 interface AnalysisResult {
   support: number[]; resistance: number[]; demand_zones: Zone[];
   supply_zones: Zone[]; bullish_ob: Zone[]; bearish_ob: Zone[];
-  bullish_fvg: Zone[]; bearish_fvg: Zone[]; // Added FVGs
+  bullish_fvg: Zone[]; bearish_fvg: Zone[];
+  buy_side_liquidity: LiquidityPoint[]; // Updated type
+  sell_side_liquidity: LiquidityPoint[]; // Updated type
   candlestick_patterns: CandlestickPattern[]; suggestion: Suggestion;
-  narrative: Narrative; // Updated type
+  narrative: Narrative;
   confidence: number; precautions: string[];
   predicted_success_rate?: string;
 }
@@ -279,35 +281,22 @@ export default function ChartsPage() {
     setAnalysisResult(null);
 
     const credentials = JSON.parse(storedCreds);
+    const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
 
-    // Using the new multi-timeframe endpoint
-    fetch(`${getBackendUrl()}/api/analyze_multi_timeframe`, {
+    // **NEW**: Call the single timeframe analysis endpoint for the "Analyze" button
+    fetch(`${getBackendUrl()}/api/analyze_single_timeframe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             credentials,
             symbol: activeSymbol,
-            trading_style: 'DAY_TRADING' // Or get this from settings
+            timeframe: timeframeValue,
         }),
     })
     .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
     .then(data => {
-        // We need to adapt the new response format to the old state structure
-        // For now, we'll just display the primary suggestion's narrative
-        const primaryTimeframe = Object.keys(data.individual_analyses)[0];
-        const primaryAnalysis = data.individual_analyses[primaryTimeframe];
-
-        const adaptedResult = {
-            ...primaryAnalysis,
-            confidence: data.final_confidence === 'HIGH' ? 90 : (data.final_confidence === 'MEDIUM' ? 65 : 40),
-            suggestion: {
-                ...data.primary_suggestion,
-                reason: `Confidence: ${data.final_confidence}. Action: ${data.final_action}. ` + data.primary_suggestion.reason,
-            },
-            narrative: data.narratives[primaryTimeframe],
-            precautions: ["This is an AI-generated suggestion, not financial advice.", "Always perform your own due diligence."],
-        };
-        setAnalysisResult(adaptedResult);
+        // The new endpoint returns the exact structure needed for the state
+        setAnalysisResult(data);
     })
     .catch(error => showAlert(`Analysis failed: ${error.error || "An unknown error."}`, 'error'))
     .finally(() => setIsAnalyzing(false));
