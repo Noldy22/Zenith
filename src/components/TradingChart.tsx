@@ -1,6 +1,6 @@
 "use client";
 
-import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay, SeriesMarker, SeriesMarkerPosition } from 'lightweight-charts';
 import React, { useEffect, useRef } from 'react';
 import { CandlestickData } from '@/lib/alphaVantage';
 
@@ -143,19 +143,30 @@ export const TradingChart = (props: {
             candlestickSeries.setMarkers([]);
 
             // Draw Liquidity Markers
-            const bslMarkers = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar', color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
-            const sslMarkers = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar', color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
+            const timeToMillis = (t: Time): number => {
+                if (typeof t === 'number') {
+                    // UTCTimestamp is seconds -> convert to ms
+                    return t * 1000;
+                }
+                // BusinessDay -> convert to UTC ms at midnight
+                const bd = t as BusinessDay;
+                return Date.UTC(bd.year, bd.month - 1, bd.day);
+            };
+
+            const bslMarkers: SeriesMarker<Time>[] = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar' as SeriesMarkerPosition, color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
+            const sslMarkers: SeriesMarker<Time>[] = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar' as SeriesMarkerPosition, color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
             // Draw Pattern Markers
-            const patternMarkers = (candlestickPatterns || []).map(p => ({
+            const patternMarkers: SeriesMarker<Time>[] = (candlestickPatterns || []).map(p => ({
                 time: p.time,
-                position: p.position === 'above' ? 'aboveBar' : 'belowBar',
+                position: (p.position === 'above' ? 'aboveBar' : 'belowBar') as SeriesMarkerPosition,
                 color: p.name.includes('Bullish') ? '#26a69a' : '#ef5350',
                 shape: 'arrowUp', // Use arrows to point to the candle
                 text: p.name.replace('Bullish ', 'B_').replace('Bearish ', 'B_').substring(0, 15) // Shorten name
             }));
 
-            candlestickSeries.setMarkers([...bslMarkers, ...sslMarkers, ...patternMarkers].sort((a, b) => a.time - b.time));
+            const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
+            candlestickSeries.setMarkers(allMarkers);
 
             // Draw Suggestion Lines
             if (suggestion && suggestion.action !== 'Neutral' && suggestion.entry && suggestion.sl && suggestion.tp) {
