@@ -124,6 +124,7 @@ export const TradingChart = (props: {
                     ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
                 };
 
+            // Draw Bullish and Bearish Order Blocks
             bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
             bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red for Bearish OB
 
@@ -156,14 +157,46 @@ export const TradingChart = (props: {
             const bslMarkers: SeriesMarker<Time>[] = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar' as SeriesMarkerPosition, color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
             const sslMarkers: SeriesMarker<Time>[] = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar' as SeriesMarkerPosition, color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
-            // Draw Pattern Markers
-            const patternMarkers: SeriesMarker<Time>[] = (candlestickPatterns || []).map(p => ({
+            // --- **UPDATED** Pattern Prioritization Logic ---
+            const patternPriority: { [key: string]: number } = {
+                'ENGULFING': 1,
+                'HAMMER': 2, 'HANGINGMAN': 2, 'SHOOTINGSTAR': 2,
+                'MORNINGSTAR': 3, 'EVENINGSTAR': 3,
+            };
+            
+            const processedPatterns: { [key: string]: CandlestickPattern } = {};
+
+            (candlestickPatterns || []).forEach(p => {
+                const timeKey = JSON.stringify(p.time);
+                const existing = processedPatterns[timeKey];
+                
+                const patternBaseName = p.name.replace('B_', '').replace('S_', '');
+                const currentPriority = patternPriority[patternBaseName] || 99;
+
+                // Only process patterns that are in our priority list
+                if (!patternPriority[patternBaseName]) {
+                    return;
+                }
+
+                if (!existing) {
+                    processedPatterns[timeKey] = { ...p, name: patternBaseName };
+                } else {
+                    const existingBaseName = existing.name.replace('B_', '').replace('S_', '');
+                    const existingPriority = patternPriority[existingBaseName] || 99;
+                    if (currentPriority < existingPriority) {
+                        processedPatterns[timeKey] = { ...p, name: patternBaseName };
+                    }
+                }
+            });
+
+            const patternMarkers: SeriesMarker<Time>[] = Object.values(processedPatterns).map(p => ({
                 time: p.time,
                 position: (p.position === 'above' ? 'aboveBar' : 'belowBar') as SeriesMarkerPosition,
-                color: p.name.includes('Bullish') ? '#26a69a' : '#ef5350',
-                shape: 'arrowUp', // Use arrows to point to the candle
-                text: p.name.replace('Bullish ', 'B_').replace('Bearish ', 'B_').substring(0, 15) // Shorten name
+                color: p.name.startsWith('B_') ? '#26a69a' : '#ef5350',
+                shape: p.position === 'below' ? 'arrowUp' : 'arrowDown',
+                text: p.name.substring(0, 10) // Shorten name
             }));
+            // --- End of New Logic ---
 
             const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
             candlestickSeries.setMarkers(allMarkers);

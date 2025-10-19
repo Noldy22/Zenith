@@ -295,39 +295,44 @@ def find_order_blocks(data, pivots):
     return bullish_obs[-2:], bearish_obs[-2:]
 
 def find_candlestick_patterns(data):
-    """Detects various candlestick patterns using pandas-ta."""
+    """Detects a curated list of famous candlestick patterns."""
     df = pd.DataFrame(data)
 
-    # Use the candlestick pattern detection function from pandas-ta
-    # This will scan for all available patterns
-    pattern_data = df.ta.cdl_pattern(name="all")
+    # List of well-known patterns to look for
+    famous_patterns = [
+        "morningstar", "eveningstar",
+        "hammer", "invertedhammer", "hangingman", "shootingstar",
+        "engulfing"
+    ]
 
-    # Rename columns to be more descriptive
+    # Use the candlestick pattern detection function from pandas-ta for the specific list
+    pattern_data = df.ta.cdl_pattern(name=famous_patterns)
+    
+    # Rename columns to be more descriptive and consistent
     pattern_data.columns = [col.replace('CDL_', '') for col in pattern_data.columns]
 
     patterns = []
-    # Find the last 5 candles that indicated a pattern
-    # A value of 100 indicates a bullish pattern, -100 a bearish one, 0 no pattern
-    for i in range(len(pattern_data) - 5, len(pattern_data)):
+    # Find all candles that indicated a pattern across the entire dataset
+    for i in range(len(pattern_data)):
         row = pattern_data.iloc[i]
         candle = df.iloc[i]
-
-        # Check for bullish patterns
+        
+        # Check for bullish patterns (value of 100)
         bullish_patterns = row[row == 100]
         for pattern_name in bullish_patterns.index:
             patterns.append({
-                'name': f"Bullish {pattern_name}",
-                'time': int(candle['time']), # Ensure time is a standard Python int
+                'name': f"B_{pattern_name.upper()}", # Shorten name for display
+                'time': int(candle['time']),
                 'position': 'below',
                 'price': candle['low']
             })
 
-        # Check for bearish patterns
+        # Check for bearish patterns (value of -100)
         bearish_patterns = row[row == -100]
         for pattern_name in bearish_patterns.index:
             patterns.append({
-                'name': f"Bearish {pattern_name}",
-                'time': int(candle['time']), # Ensure time is a standard Python int
+                'name': f"S_{pattern_name.upper()}", # Shorten name for display
+                'time': int(candle['time']),
                 'position': 'above',
                 'price': candle['high']
             })
