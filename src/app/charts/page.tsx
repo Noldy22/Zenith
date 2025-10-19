@@ -2,6 +2,7 @@
 
 import { TradingChart } from "@/components/TradingChart";
 import SymbolSearch from "@/components/SymbolSearch";
+import Chat from "@/components/Chat"; // Import the new Chat component
 import { CandlestickData } from "@/lib/alphaVantage";
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { ISeriesApi, Time } from "lightweight-charts";
@@ -479,6 +480,10 @@ export default function ChartsPage() {
             ) : (
               <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>
             )}
+          </div>
+          {/* New Chat Section */}
+          <div className="mt-4 h-[400px]">
+             {analysisResult && <Chat analysisContext={analysisResult} />}
           </div>
         </div>
         <div className="md:col-span-1 bg-secondary rounded-xl p-4 min-h-[600px] flex flex-col shadow-lg">

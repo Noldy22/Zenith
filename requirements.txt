@@ -8,3 +8,5 @@ joblib
 gevent
 gevent-websocket
 pandas-ta
+google-generativeai
+python-dotenv

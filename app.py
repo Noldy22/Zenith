@@ -14,6 +14,8 @@ import os
 from functools import wraps
 import socket # Import socket to get local IP
 import traceback # Import traceback for detailed error logging
+import google.generativeai as genai
+from dotenv import load_dotenv
 
 # --- AI & Learning Imports ---
 from analysis import (
@@ -24,6 +26,16 @@ from analysis import (
 # Make sure all necessary functions from learning are imported
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features, predict_success_rate
 from backtest import run_backtest
+
+
+# --- Gemini Configuration ---
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    print("Gemini API Key loaded successfully.")
+else:
+    print("Warning: GEMINI_API_KEY not found in .env file. Gemini features will be disabled.")
 
 # (Keep CORS setup, MT5Manager, AppState, mt5_required, Timeframe maps, init_db etc. as they are)
 # --- Dynamic Origin Configuration for CORS ---
@@ -335,12 +347,62 @@ def _run_full_analysis(symbol, credentials, style):
     return analyses
 
 
+# --- Get analysis from Gemini ---
+def get_gemini_analysis(analysis_data):
+    if not GEMINI_API_KEY:
+        return {
+            "action": "Neutral",
+            "reason": "Gemini API key not configured.",
+            "entry": None, "sl": None, "tp": None
+        }
+
+    try:
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        prompt = f"""
+        As a professional trading analyst AI, your task is to identify a high-probability trading setup based on the provided market data.
+
+        **Market Data:**
+        {json.dumps(analysis_data, indent=2)}
+
+        **Instructions:**
+        1.  **Analyze the Confluence:** Synthesize all the provided data points (market structure, zones, liquidity, patterns).
+        2.  **Determine Bias:** Decide on a clear bullish, bearish, or neutral bias.
+        3.  **Formulate a Trade Plan:** If a bias exists, create a precise trade plan.
+        4.  **Provide Output in JSON Format ONLY:** Your entire response must be a single, valid JSON object with no other text or formatting.
+
+        **JSON Output Structure:**
+        {{
+          "action": "Buy",
+          "reason": "A concise, expert-level justification for the trade (max 2-3 sentences).",
+          "entry": 1.23456,
+          "sl": 1.23300,
+          "tp": 1.23800
+        }}
+
+        **Action Values:** "Buy", "Sell", or "Neutral".
+        - If "Neutral", the reason should explain why there is no clear setup, and entry/sl/tp should be null.
+        - Entry, SL, and TP must be floating-point numbers.
+        """
+        response = model.generate_content(prompt)
+        # Clean up the response to ensure it's valid JSON
+        cleaned_response = response.text.strip().replace('```json', '').replace('```', '')
+        gemini_suggestion = json.loads(cleaned_response)
+        return gemini_suggestion
+
+    except Exception as e:
+        print(f"Error getting analysis from Gemini: {e}")
+        return {
+            "action": "Neutral",
+            "reason": f"Error communicating with Gemini AI: {e}",
+            "entry": None, "sl": None, "tp": None
+        }
+
 # --- UPDATED: Function to run analysis on a single timeframe ---
 def _run_single_timeframe_analysis(df, symbol):
-    """Runs the full analysis suite on a single dataframe."""
+    """Runs the full analysis suite on a single dataframe and gets Gemini's input."""
     analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
     try:
-        # Perform all analysis steps
+        # Perform all the existing technical analysis
         analysis["support"], analysis["resistance"], pivots = find_levels(df)
         analysis["market_structure"] = determine_market_structure(pivots)
         analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
@@ -349,14 +411,15 @@ def _run_single_timeframe_analysis(df, symbol):
         analysis["buy_side_liquidity"], analysis["sell_side_liquidity"] = find_liquidity_pools(pivots)
         analysis["candlestick_patterns"] = find_candlestick_patterns(df)
 
-        # Get suggestion and confidence based purely on technical analysis first
-        suggestion = get_trade_suggestion(analysis)
-        analysis["suggestion"] = suggestion
-        analysis["confidence"] = calculate_confidence(analysis, suggestion) # TA confidence
+        # Get the high-probability setup from Gemini
+        gemini_suggestion = get_gemini_analysis(analysis)
+        analysis["suggestion"] = gemini_suggestion
+        
+        # The narrative and confidence are now based on the combined analysis
+        analysis["confidence"] = calculate_confidence(analysis, analysis["suggestion"])
         analysis["narrative"] = generate_market_narrative(analysis)
-
-        # --- ML Prediction Integration ---
-        # Predict success rate using the loaded model and add it to the analysis dict
+        
+        # The ML prediction can remain as a separate, complementary data point
         predicted_rate = predict_success_rate(analysis, STATE.ml_model, STATE.ml_vectorizer)
         analysis["predicted_success_rate"] = predicted_rate
 
@@ -367,14 +430,12 @@ def _run_single_timeframe_analysis(df, symbol):
 
     except Exception as e:
         print(f"Error during single timeframe analysis for {symbol}: {e}")
-        traceback.print_exc() # Print detailed error
-        # Return a partial analysis dictionary with an error flag
+        traceback.print_exc()
         analysis["error"] = f"Analysis failed: {e}"
         analysis["suggestion"] = {"action": "Neutral", "reason": "Analysis error.", "entry": None, "sl": None, "tp": None}
         analysis["confidence"] = 0
         analysis["narrative"] = {"overview": f"Analysis failed for {symbol}", "structure_body": str(e), "levels_body": [], "prediction_body": ""}
         analysis["predicted_success_rate"] = "N/A (Analysis error)"
-
 
     return analysis
 
@@ -1061,6 +1122,50 @@ def handle_stop_autotrade():
         STATE.autotrade_thread = None # Clear ref if it wasn't running
 
     return jsonify({"message": "Auto-trading stopped."})
+
+
+# --- New Chat Endpoint ---
+@app.route('/api/chat', methods=['POST'])
+def handle_chat():
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "Gemini API key not configured."}), 500
+
+    try:
+        data = request.get_json()
+        user_message = data.get('message')
+        analysis_context = data.get('analysis_context')
+        chat_history = data.get('history', []) # Expecting a list of {"role": "user/model", "parts": ["message"]}
+
+        if not user_message or not analysis_context:
+            return jsonify({"error": "Missing message or analysis context."}), 400
+
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        chat = model.start_chat(history=chat_history)
+        
+        # Construct a more detailed prompt for the chat
+        prompt = f"""
+        You are a trading assistant AI named Zenith. A user is asking a question about a market analysis you have performed.
+        
+        **Analysis Context:**
+        {json.dumps(analysis_context, indent=2)}
+
+        **User's Question:**
+        "{user_message}"
+
+        **Instructions:**
+        - Answer the user's question concisely and directly, based *only* on the provided analysis context.
+        - Do not give financial advice.
+        - Maintain the persona of Zenith, a helpful and knowledgeable trading AI.
+        - If the question is outside the scope of the analysis, politely state that you can only answer questions about the current chart analysis.
+        """
+        
+        response = chat.send_message(prompt)
+        return jsonify({"reply": response.text})
+
+    except Exception as e:
+        print(f"Error in chat endpoint: {e}")
+        traceback.print_exc()
+        return jsonify({"error": f"An error occurred in the chat service: {e}"}), 500
 
 
 # --- SocketIO Events ---
