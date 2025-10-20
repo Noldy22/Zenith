@@ -16,9 +16,9 @@
     "server": "MetaQuotes-Demo",
     "terminal_path": "\"C:\\Program Files\\MetaTrader 5\\terminal64.exe\""
   },
-  "breakeven_enabled": false,
+  "breakeven_enabled": true,
   "breakeven_pips": 20,
-  "trailing_stop_enabled": false,
+  "trailing_stop_enabled": true,
   "trailing_stop_pips": 20,
-  "proactive_close_enabled": false
+  "proactive_close_enabled": true
 }
