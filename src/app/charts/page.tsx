@@ -1,6 +1,8 @@
 "use client";
 
+import { useAnalysis } from '@/hooks/useAnalysis';
 import { TradingChart } from "@/components/TradingChart";
+import ChartAnimation from "@/components/ChartAnimation";
 import SymbolSearch from "@/components/SymbolSearch";
 import Chat from "@/components/Chat"; // Import the new Chat component
 import { CandlestickData } from "@/lib/alphaVantage";
@@ -16,41 +18,13 @@ const getBackendUrl = () => {
     return 'http://127.0.0.1:5000'; // Default for server-side rendering
 };
 
-const timeframes = {
-  'M1': 'M1', 'M5': 'M5', 'M15': 'M15', 'M30': 'M30', '1H': 'H1',
-  '4H': 'H4', 'Daily': 'D1', 'Weekly': 'W1', 'Monthly': 'MN1'
-};
+import { timeframes, AnalysisResult } from '@/lib/types';
 
 const brokerPaths = {
   'Exness': 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
   'MetaQuotes': 'C:\\Program Files\\MetaTrader 5\\terminal64.exe',
   'Custom': ''
 };
-
-interface Zone { high: number; low: number; time: Time; }
-interface LiquidityPoint { time: Time; price: number; } // New interface for Liquidity
-interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; reason: string; }
-interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
-interface Narrative {
-  overview: string;
-  structure_title: string;
-  structure_body: string;
-  levels_title: string;
-  levels_body: string[];
-  prediction_title: string;
-  prediction_body: string;
-}
-interface AnalysisResult {
-  support: number[]; resistance: number[]; demand_zones: Zone[];
-  supply_zones: Zone[]; bullish_ob: Zone[]; bearish_ob: Zone[];
-  bullish_fvg: Zone[]; bearish_fvg: Zone[];
-  buy_side_liquidity: LiquidityPoint[]; // Updated type
-  sell_side_liquidity: LiquidityPoint[]; // Updated type
-  candlestick_patterns: CandlestickPattern[]; suggestion: Suggestion;
-  narrative: Narrative;
-  confidence: number; precautions: string[];
-  predicted_success_rate?: string;
-}
 
 export default function ChartsPage() {
   const { showAlert } = useAlert();
@@ -69,10 +43,7 @@ export default function ChartsPage() {
   const timeframeDropdownRef = useRef<HTMLDivElement>(null);
   const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-
-  // Analysis and Trading State
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const { isAnalyzing, analysisResult, analysisProgress, performAnalysis } = useAnalysis();
   const [lotSize, setLotSize] = useState('0.01');
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
@@ -217,6 +188,47 @@ export default function ChartsPage() {
     }
   }, [analysisResult]);
 
+  useEffect(() => {
+    if (isConnected) {
+        socketRef.current = io(getBackendUrl());
+
+        socketRef.current.on('connect', () => {
+            console.log('Socket connected for chart updates and analysis!');
+            const storedCreds = localStorage.getItem('mt5_credentials');
+            if (storedCreds) {
+                socketRef.current?.emit('subscribe_to_chart', {
+                    symbol: activeSymbol,
+                    timeframe: timeframes[activeTimeframe as keyof typeof timeframes],
+                    credentials: JSON.parse(storedCreds)
+                });
+            }
+        });
+
+        socketRef.current.on('new_bar', (bar: CandlestickData) => {
+            if (seriesRef.current) {
+                seriesRef.current.update(bar);
+            }
+        });
+
+        socketRef.current.on('training_complete', (data) => {
+            showAlert(data.message, 'success');
+        });
+
+        // New listener for analysis progress
+        socketRef.current.on('analysis_progress', (data) => {
+            // A better implementation would be to lift the setAnalysisProgress function
+            // into a shared context or state management library (like Zustand or Redux),
+            // but for simplicity, we'll just log it here for now.
+            // This will be properly implemented when we refactor the hook.
+            console.log('Analysis Progress:', data.message);
+        });
+
+        return () => {
+            socketRef.current?.disconnect();
+        };
+    }
+}, [isConnected, activeSymbol, activeTimeframe, showAlert]);
+
   const handleChartReady = useCallback((series: ISeriesApi<"Candlestick">) => { seriesRef.current = series; }, []);
 
   const handleBrokerSelection = (broker: keyof typeof brokerPaths) => {
@@ -272,35 +284,7 @@ export default function ChartsPage() {
   };
 
   const handleAnalysis = () => {
-    const storedCreds = localStorage.getItem('mt5_credentials');
-    if (!storedCreds) {
-      showAlert("Please connect to your MT5 account first.", 'error');
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setAnalysisResult(null);
-
-    const credentials = JSON.parse(storedCreds);
-    const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
-
-    // **NEW**: Call the single timeframe analysis endpoint for the "Analyze" button
-    fetch(`${getBackendUrl()}/api/analyze_single_timeframe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            credentials,
-            symbol: activeSymbol,
-            timeframe: timeframeValue,
-        }),
-    })
-    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
-    .then(data => {
-        // The new endpoint returns the exact structure needed for the state
-        setAnalysisResult(data);
-    })
-    .catch(error => showAlert(`Analysis failed: ${error.error || "An unknown error."}`, 'error'))
-    .finally(() => setIsAnalyzing(false));
+    performAnalysis(activeSymbol, activeTimeframe as keyof typeof timeframes);
   };
 
   const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
@@ -458,6 +442,7 @@ export default function ChartsPage() {
             <h1 className="text-3xl font-bold">Trading Chart for {activeSymbol}</h1>
           </div>
           <div className="relative rounded-md overflow-hidden h-[450px] bg-secondary">
+            <ChartAnimation isAnalyzing={isAnalyzing} />
             {isLoading ? (
               <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
             ) : chartData.length > 0 ? (
@@ -494,8 +479,13 @@ export default function ChartsPage() {
                 </button>
             </div>
           <div className="mt-4 flex-grow overflow-y-auto">
-            {isAnalyzing && <p className="text-gray-400">Performing advanced analysis...</p>}
-            {analysisResult ? (
+            {isAnalyzing && (
+              <div className="text-center p-4">
+                <p className="text-lg text-yellow-400 font-semibold animate-pulse">{analysisProgress}</p>
+                <p className="text-sm text-gray-500 mt-2">Please wait, AI is at work...</p>
+              </div>
+            )}
+            {analysisResult && !isAnalyzing ? (
                 <div className="space-y-4 text-sm">
                     {analysisResult.predicted_success_rate && (
                         <div>

@@ -28,7 +28,7 @@ const defaultSettings = {
 
 export default function DashboardPage() {
   const [settings, setSettings] = useState(defaultSettings);
-  const [accountInfo, setAccountInfo] = useState({ balance: 0, equity: 0 });
+  const [accountInfo, setAccountInfo] = useState({ balance: 0, equity: 0, profit: 0 });
   const [tradeSignal, setTradeSignal] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -71,6 +71,9 @@ export default function DashboardPage() {
         setTradeSignal(data.params);
     });
     socket.on('notification', (data) => toast.info(data.message));
+    socket.on('profit_update', (data) => {
+        setAccountInfo(prev => ({ ...prev, profit: data.profit }));
+    });
 
     return () => {
         socket.disconnect();
@@ -118,7 +121,10 @@ export default function DashboardPage() {
             <div>
                 <h1 className="text-xl font-bold">Forex Trading Bot</h1>
                 <p className="text-sm text-gray-400">
-                    Account: {settings?.mt5_credentials?.login || 'N/A'} | Balance: ${accountInfo.balance.toFixed(2)} | Equity: ${accountInfo.equity.toFixed(2)}
+                    Account: {settings?.mt5_credentials?.login || 'N/A'} | Balance: ${accountInfo.balance.toFixed(2)} | Equity: ${accountInfo.equity.toFixed(2)} |
+                    <span className={`ml-2 font-semibold ${accountInfo.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        P/L: ${accountInfo.profit.toFixed(2)}
+                    </span>
                 </p>
             </div>
             <div className="flex items-center gap-4">
@@ -159,7 +165,7 @@ export default function DashboardPage() {
 
             <aside className="space-y-6">
                 <PositionTracker credentials={settings?.mt5_credentials} />
-                <StatsPanel />
+                <StatsPanel credentials={settings?.mt5_credentials} />
             </aside>
         </div>
     </main>

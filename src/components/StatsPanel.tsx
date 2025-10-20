@@ -1,17 +1,64 @@
-"use client";
+import { useState, useEffect } from 'react';
+import { toast } from 'react-toastify';
 
-// This is a placeholder component for now.
-// A full implementation would require the backend to provide daily trade history.
+const getBackendUrl = () => {
+    if (typeof window !== 'undefined') {
+        return `http://${window.location.hostname}:5000`;
+    }
+    return 'http://127.0.0.1:5000';
+};
 
-const StatsPanel = () => {
-    // Hardcoded data for demonstration
-    const stats = {
-        trades: 5,
-        won: 3,
-        lost: 2,
-        winRate: "60%",
-        dailyPnl: 8.50,
-    };
+interface Stats {
+    trades: number;
+    won: number;
+    lost: number;
+    winRate: string;
+    dailyPnl: number;
+}
+
+interface StatsPanelProps {
+  credentials: any; // Simplified for brevity
+}
+
+const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
+    const [stats, setStats] = useState<Stats | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchStats = async () => {
+            if (!credentials || !credentials.login) {
+                setIsLoading(false);
+                return;
+            }
+            setIsLoading(true);
+            try {
+                const response = await fetch(`${getBackendUrl()}/api/get_daily_stats`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(credentials), // Pass credentials for the @mt5_required check
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    setStats(data);
+                } else {
+                    const err = await response.json();
+                    toast.error(`Could not load stats: ${err.error || 'Unknown error'}`);
+                    setStats(null);
+                }
+            } catch (error) {
+                toast.error("Failed to fetch daily stats.");
+                setStats(null);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchStats();
+        // Refresh stats every 30 seconds
+        const interval = setInterval(fetchStats, 30000);
+
+        return () => clearInterval(interval);
+    }, [credentials]);
 
     const getPnlColor = (pnl: number) => {
         if (pnl > 0) return 'text-green-400';
@@ -19,11 +66,16 @@ const StatsPanel = () => {
         return 'text-gray-400';
     };
 
-    return (
-        <div className="bg-gray-800 p-4 rounded-lg shadow-lg">
-            <h3 className="text-xl font-semibold mb-4">Today's Stats</h3>
+    const renderContent = () => {
+        if (isLoading) {
+            return <p className="text-gray-400 text-center">Loading stats...</p>;
+        }
+        if (!stats) {
+            return <p className="text-gray-500 text-center">No trading activity found for today.</p>;
+        }
+        return (
             <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
+                 <div>
                     <p className="text-gray-400">Trades</p>
                     <p className="text-lg font-bold">{stats.trades}</p>
                 </div>
@@ -46,6 +98,13 @@ const StatsPanel = () => {
                     </p>
                 </div>
             </div>
+        );
+    };
+
+    return (
+        <div className="bg-gray-800 p-4 rounded-lg shadow-lg">
+            <h3 className="text-xl font-semibold mb-4">Today's Stats</h3>
+            {renderContent()}
         </div>
     );
 };
