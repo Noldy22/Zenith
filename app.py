@@ -579,49 +579,63 @@ def _execute_trade_logic(creds, trade_params):
 
 
 def _update_trade_outcomes():
-    """ periodically checks for closed trades and updates their outcomes in the database."""
+    """
+    Checks for closed trades and updates their outcomes in the database.
+    Returns a dictionary summarizing the operation.
+    """
     print("Running trade outcome check...")
+    summary = {
+        "deals_found_in_history": 0,
+        "pending_trades_in_db": 0,
+        "trades_updated": 0,
+        "error": None
+    }
     try:
-        # Get trades from the last 90 days
         from_date = datetime.now() - timedelta(days=90)
         history_deals = mt5.history_deals_get(from_date, datetime.now())
 
         if history_deals is None:
-            print(f"Could not get trade history from MT5. Error: {mt5.last_error()}")
-            return
+            error_msg = f"Could not get trade history from MT5. Error: {mt5.last_error()}"
+            print(error_msg)
+            summary["error"] = error_msg
+            return summary
+
+        summary["deals_found_in_history"] = len(history_deals)
 
         conn = sqlite3.connect('trades.db', check_same_thread=False)
         cursor = conn.cursor()
 
-        # Get all pending trade order IDs from our database
         cursor.execute("SELECT id, order_id FROM trades WHERE outcome = -1")
-        pending_trades = {row[1]: row[0] for row in cursor.fetchall()} # {order_id: db_id}
+        pending_trades = {row[1]: row[0] for row in cursor.fetchall()}
+        summary["pending_trades_in_db"] = len(pending_trades)
 
         if not pending_trades:
-            # print("No pending trades in DB to check.")
             conn.close()
-            return
+            return summary
 
         updated_count = 0
         for deal in history_deals:
-            # We are looking for 'out' deals (entry=1) that correspond to an order we have logged
             if deal.order in pending_trades and deal.entry == 1 and deal.magic == 234000:
-                outcome = 1 if deal.profit >= 0 else 0 # Win/breakeven vs Loss
+                outcome = 1 if deal.profit >= 0 else 0
                 db_id = pending_trades[deal.order]
-
                 cursor.execute("UPDATE trades SET outcome = ? WHERE id = ?", (outcome, db_id))
                 updated_count += 1
                 print(f"Updated outcome for Order ID {deal.order} (DB ID: {db_id}) to {outcome} (Profit: {deal.profit})")
 
-
         if updated_count > 0:
             conn.commit()
             print(f"Committed {updated_count} trade outcome updates to the database.")
+
+        summary["trades_updated"] = updated_count
         conn.close()
 
     except Exception as e:
-        print(f"Error in _update_trade_outcomes: {e}")
+        error_msg = f"An unexpected error occurred in _update_trade_outcomes: {e}"
+        print(error_msg)
         traceback.print_exc()
+        summary["error"] = error_msg
+
+    return summary
 
 # --- Auto-Trading Loop (Modified to use ML prediction potentially) ---
 # (Keep the trading_loop function as previously updated)
@@ -1233,11 +1247,11 @@ def handle_chat():
 @app.route('/api/force_outcome_update', methods=['POST'])
 @mt5_required
 def handle_force_outcome_update():
-    """Manually triggers the trade outcome check."""
+    """Manually triggers the trade outcome check and returns a detailed summary."""
     try:
         print("Manual trade outcome update triggered via API.")
-        _update_trade_outcomes()
-        return jsonify({"message": "Trade outcome check completed. Check server logs for details."})
+        summary = _update_trade_outcomes()
+        return jsonify(summary)
     except Exception as e:
         print(f"Error during manual outcome update: {e}")
         traceback.print_exc()
