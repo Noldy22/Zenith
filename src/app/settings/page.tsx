@@ -150,6 +150,24 @@ const SettingsPage = () => {
         }
     };
 
+    const handleTrainModel = async () => {
+        toast.info("Starting model training... This may take a moment.");
+        try {
+            const response = await fetch(`${getBackendUrl()}/api/train_model`, {
+                method: 'POST',
+            });
+            const result = await response.json();
+            if (response.ok) {
+                toast.success(`Model trained successfully! Accuracy: ${(result.accuracy * 100).toFixed(2)}%`);
+            } else {
+                toast.error(`Training failed: ${result.error || "Unknown error"}`);
+            }
+        } catch (error) {
+            console.error("Train model error:", error);
+            toast.error("Error connecting to backend for training.");
+        }
+    };
+
     if (isLoading) {
         return <div className="p-8 text-center">Loading settings...</div>;
     }
@@ -244,9 +262,12 @@ const SettingsPage = () => {
                 </div>
             </div>
 
-            <div className="mt-8 text-center">
+            <div className="mt-8 flex justify-center items-center space-x-4">
                 <button onClick={handleSaveSettings} className="px-8 py-3 bg-amber-500 text-gray-900 font-bold rounded-lg hover:bg-amber-600 transition-colors shadow-md">
                     Save Settings
+                </button>
+                <button onClick={handleTrainModel} className="px-8 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-md">
+                    Train Model
                 </button>
             </div>
         </main>
