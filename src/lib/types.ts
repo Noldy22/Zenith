@@ -28,3 +28,25 @@ export interface AnalysisResult {
   confidence: number;
   predicted_success_rate?: string;
 }
+
+export interface Settings {
+    trading_style: string;
+    risk_per_trade: number;
+    max_daily_loss: number;
+    account_balance: number;
+    auto_trading_enabled: boolean;
+    notifications_enabled: boolean;
+    min_confluence: number;
+    pairs_to_trade: string[];
+    mt5_credentials: {
+        login: string;
+        password: string;
+        server: string;
+        terminal_path: string;
+    };
+    breakeven_enabled: boolean;
+    breakeven_pips: number;
+    trailing_stop_enabled: boolean;
+    trailing_stop_pips: number;
+    proactive_close_enabled: boolean;
+}

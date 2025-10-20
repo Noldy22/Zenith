@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import type { Settings } from '../../lib/types';
 
 const getBackendUrl = () => {
     // Keep this function as is
@@ -13,22 +14,26 @@ const getBackendUrl = () => {
 };
 
 const SettingsPage = () => {
-    const [settings, setSettings] = useState({
+    const [settings, setSettings] = useState<Settings>({
         trading_style: "DAY_TRADING",
         risk_per_trade: 2.0,
-        max_daily_loss: 5.0, // This wasn't used in backend logic, but keep for consistency
+        max_daily_loss: 5.0,
         account_balance: 10000.0,
         auto_trading_enabled: false,
         notifications_enabled: true,
         min_confluence: 2,
-        // Initialize pairs_to_trade as an array
-        pairs_to_trade: [] as string[], // Explicitly type as string array
+        pairs_to_trade: [] as string[],
         mt5_credentials: {
-            login: "", // Keep as string for input, backend converts to int
+            login: "",
             password: "",
             server: "",
             terminal_path: ""
-        }
+        },
+        breakeven_enabled: false,
+        breakeven_pips: 20,
+        trailing_stop_enabled: false,
+        trailing_stop_pips: 20,
+        proactive_close_enabled: false,
     });
     const [isLoading, setIsLoading] = useState(true);
     // State to hold the comma-separated string for the pairs input
@@ -258,6 +263,47 @@ const SettingsPage = () => {
                         <input type="password" name="mt5_credentials.password" placeholder="Password" value={settings.mt5_credentials.password} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
                         <input type="text" name="mt5_credentials.server" placeholder="Broker Server" value={settings.mt5_credentials.server} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
                         <input type="text" name="mt5_credentials.terminal_path" placeholder="MT5 Terminal Path (e.g., C:\\Program Files\\...)" value={settings.mt5_credentials.terminal_path} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
+                    </div>
+                </div>
+
+                {/* Trade Management */}
+                <div className="bg-gray-800 p-6 rounded-lg shadow-md col-span-1 md:col-span-2">
+                    <h2 className="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Trade Management</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                        {/* Breakeven */}
+                        <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-gray-300">Enable Breakeven</label>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="breakeven_enabled" checked={settings.breakeven_enabled} onChange={handleInputChange} className="sr-only peer" />
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                            </label>
+                        </div>
+                        <div>
+                            <label className="block mb-2 text-sm font-medium text-gray-300">Breakeven Trigger (Pips)</label>
+                            <input type="number" name="breakeven_pips" value={settings.breakeven_pips} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" disabled={!settings.breakeven_enabled} />
+                        </div>
+
+                        {/* Trailing Stop */}
+                        <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-gray-300">Enable Trailing Stop</label>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="trailing_stop_enabled" checked={settings.trailing_stop_enabled} onChange={handleInputChange} className="sr-only peer" />
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                            </label>
+                        </div>
+                        <div>
+                            <label className="block mb-2 text-sm font-medium text-gray-300">Trailing Stop Distance (Pips)</label>
+                            <input type="number" name="trailing_stop_pips" value={settings.trailing_stop_pips} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" disabled={!settings.trailing_stop_enabled} />
+                        </div>
+
+                        {/* Proactive Close */}
+                        <div className="flex items-center justify-between md:col-span-2">
+                            <label className="text-sm font-medium text-gray-300">Enable Proactive Close</label>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="proactive_close_enabled" checked={settings.proactive_close_enabled} onChange={handleInputChange} className="sr-only peer" />
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
