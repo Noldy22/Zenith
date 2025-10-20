@@ -15,5 +15,10 @@
     "password": "0tVpKa!g",
     "server": "MetaQuotes-Demo",
     "terminal_path": "\"C:\\Program Files\\MetaTrader 5\\terminal64.exe\""
-  }
+  },
+  "breakeven_enabled": false,
+  "breakeven_pips": 20,
+  "trailing_stop_enabled": false,
+  "trailing_stop_pips": 20,
+  "proactive_close_enabled": false
 }

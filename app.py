@@ -28,6 +28,7 @@ from analysis import (
 # Make sure all necessary functions from learning are imported
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features, predict_success_rate
 from backtest import run_backtest
+from trade_monitor import manage_breakeven, manage_trailing_stop, monitor_and_close_trades
 
 
 # --- Gemini Configuration ---
@@ -147,7 +148,12 @@ class AppState:
             "notifications_enabled": True,
             "min_confluence": 2,
             "pairs_to_trade": [],
-            "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" }
+            "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" },
+            "breakeven_enabled": False,
+            "breakeven_pips": 20,
+            "trailing_stop_enabled": False,
+            "trailing_stop_pips": 20,
+            "proactive_close_enabled": False
         }
         self.lock = threading.Lock()
         # --- ADDED: Load ML model on startup ---
@@ -739,6 +745,22 @@ def trading_loop():
                 min_confluence = settings.get('min_confluence', 2)
 
                 if final_action != "Neutral" and confluence_count >= min_confluence:
+                    # --- NEW: Check for existing positions before entering ---
+                    open_positions = mt5.positions_get(symbol=symbol)
+                    if open_positions is not None and len(open_positions) > 0:
+                        has_buy = any(p.type == mt5.ORDER_TYPE_BUY for p in open_positions)
+                        has_sell = any(p.type == mt5.ORDER_TYPE_SELL for p in open_positions)
+
+                        if final_action == "Buy" and has_sell:
+                            print(f"Skipping BUY on {symbol}: An open SELL position exists.")
+                            continue # Skip this trade
+                        if final_action == "Sell" and has_buy:
+                            print(f"Skipping SELL on {symbol}: An open BUY position exists.")
+                            continue # Skip this trade
+
+                        # Optional: Add logic here to limit number of concurrent trades
+                        # For example: if len(open_positions) >= 3: continue
+
                     # Use the primary timeframe's analysis for execution details
                     primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
                     if primary_tf not in analyses or "error" in analyses[primary_tf]:
@@ -846,16 +868,33 @@ def trading_loop():
 
 
 def trade_monitoring_loop():
-    """Background thread loop to check for closed trade outcomes."""
+    """Background thread loop for proactive trade management and outcome checking."""
     print("Trade outcome monitoring thread started.")
     while STATE.monitoring_running:
         if mt5_manager.is_initialized:
+            # --- Proactive Trade Management ---
+            open_positions = mt5.positions_get()
+            if open_positions:
+                with STATE.lock:
+                    settings = STATE.settings.copy()
+
+                for position in open_positions:
+                    if position.magic == 234000: # Manage only bot's trades
+                        symbol_info = mt5.symbol_info(position.symbol)
+                        if not symbol_info:
+                            continue
+
+                        manage_breakeven(position, settings, symbol_info)
+                        manage_trailing_stop(position, settings, symbol_info)
+                        monitor_and_close_trades(position, settings, _run_full_analysis, TRADING_STYLE_TIMEFRAMES)
+
+            # --- Outcome Checking for Closed Trades ---
             _update_trade_outcomes()
         else:
             print("Trade Monitor: MT5 not connected, skipping check.")
 
-        # Wait for 5 minutes (300 seconds) before the next check
-        time.sleep(300)
+        # Wait for 1 minute (60 seconds) for more responsive management
+        time.sleep(60)
     print("Trade outcome monitoring thread stopped.")
 
 
