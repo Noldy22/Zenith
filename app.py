@@ -405,15 +405,23 @@ def _run_single_timeframe_analysis(df, symbol):
     analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
     try:
         # Perform all the existing technical analysis
+        socketio.emit('analysis_progress', {'message': 'Finding support and resistance...'})
         analysis["support"], analysis["resistance"], pivots = find_levels(df)
+        socketio.emit('analysis_progress', {'message': 'Determining market structure...'})
         analysis["market_structure"] = determine_market_structure(pivots)
+        socketio.emit('analysis_progress', {'message': 'Finding demand and supply zones...'})
         analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
+        socketio.emit('analysis_progress', {'message': 'Finding order blocks...'})
         analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
+        socketio.emit('analysis_progress', {'message': 'Finding fair value gaps...'})
         analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
+        socketio.emit('analysis_progress', {'message': 'Finding liquidity pools...'})
         analysis["buy_side_liquidity"], analysis["sell_side_liquidity"] = find_liquidity_pools(pivots)
+        socketio.emit('analysis_progress', {'message': 'Finding candlestick patterns...'})
         analysis["candlestick_patterns"] = find_candlestick_patterns(df)
 
         # Get the high-probability setup from Gemini
+        socketio.emit('analysis_progress', {'message': 'Getting Gemini analysis...'})
         gemini_suggestion = get_gemini_analysis(analysis)
         analysis["suggestion"] = gemini_suggestion
         
@@ -424,11 +432,6 @@ def _run_single_timeframe_analysis(df, symbol):
         # The ML prediction can remain as a separate, complementary data point
         predicted_rate = predict_success_rate(analysis, STATE.ml_model, STATE.ml_vectorizer)
         analysis["predicted_success_rate"] = predicted_rate
-
-        analysis['precautions'] = [
-            "This is an AI-generated analysis, not financial advice.",
-            "Always perform your own due diligence before trading."
-        ]
 
     except Exception as e:
         print(f"Error during single timeframe analysis for {symbol}: {e}")
@@ -861,6 +864,7 @@ def get_account_info():
     creds = request.get_json()
     info = mt5.account_info()
     if info:
+        socketio.emit('profit_update', {'profit': info.profit})
         return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
 
     print(f"Could not fetch account info after successful connection check. Last MT5 error: {mt5.last_error()}")
@@ -1319,6 +1323,50 @@ def handle_train_model():
         traceback.print_exc()
         return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
 
+
+@app.route('/api/get_daily_stats', methods=['POST'])
+@mt5_required
+def get_daily_stats():
+    """
+    Calculates and returns trading statistics for the current day
+    based on the trade history from MT5.
+    """
+    try:
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        history_deals = mt5.history_deals_get(today, datetime.now())
+
+        if history_deals is None:
+            return jsonify({"error": f"Could not get trade history from MT5. Error: {mt5.last_error()}"}), 500
+
+        # Filter for deals that are closing trades (entry type 'OUT') and belong to the bot
+        closed_trades = [d for d in history_deals if d.entry == 1 and d.magic == 234000]
+
+        total_trades = len(closed_trades)
+        if total_trades == 0:
+            return jsonify({
+                "trades": 0, "won": 0, "lost": 0,
+                "winRate": "0%", "dailyPnl": 0.0
+            })
+
+        trades_won = sum(1 for d in closed_trades if d.profit >= 0)
+        trades_lost = total_trades - trades_won
+        win_rate = (trades_won / total_trades) * 100 if total_trades > 0 else 0
+        total_pnl = sum(d.profit for d in closed_trades)
+
+        stats = {
+            "trades": total_trades,
+            "won": trades_won,
+            "lost": trades_lost,
+            "winRate": f"{win_rate:.1f}%",
+            "dailyPnl": total_pnl
+        }
+        return jsonify(stats)
+
+    except Exception as e:
+        print(f"Error in get_daily_stats: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "An unexpected server error occurred."}), 500
 
 # --- SocketIO Events ---
 @socketio.on('connect')
