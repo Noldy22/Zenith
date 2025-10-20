@@ -578,17 +578,18 @@ def _execute_trade_logic(creds, trade_params):
     return result
 
 
-def _update_trade_outcomes():
+def _update_trade_outcomes(ignore_magic_number=False):
     """
     Checks for closed trades and updates their outcomes in the database.
     Returns a dictionary summarizing the operation.
     """
-    print("Running trade outcome check...")
+    print(f"Running trade outcome check... (Ignore Magic Number: {ignore_magic_number})")
     summary = {
         "deals_found_in_history": 0,
         "pending_trades_in_db": 0,
         "trades_updated": 0,
-        "error": None
+        "error": None,
+        "magic_number_ignored": ignore_magic_number
     }
     try:
         from_date = datetime.now() - timedelta(days=90)
@@ -615,12 +616,22 @@ def _update_trade_outcomes():
 
         updated_count = 0
         for deal in history_deals:
-            if deal.order in pending_trades and deal.entry == 1 and deal.magic == 234000:
+            # The condition to check if a deal corresponds to a pending trade
+            is_matching_deal = (
+                deal.order in pending_trades and
+                deal.entry == 1 and
+                (ignore_magic_number or deal.magic == 234000) # Conditionally check magic number
+            )
+
+            if is_matching_deal:
                 outcome = 1 if deal.profit >= 0 else 0
                 db_id = pending_trades[deal.order]
                 cursor.execute("UPDATE trades SET outcome = ? WHERE id = ?", (outcome, db_id))
                 updated_count += 1
+                # Remove the trade from pending_trades to avoid updating it again with another deal
+                del pending_trades[deal.order]
                 print(f"Updated outcome for Order ID {deal.order} (DB ID: {db_id}) to {outcome} (Profit: {deal.profit})")
+
 
         if updated_count > 0:
             conn.commit()
@@ -1247,10 +1258,16 @@ def handle_chat():
 @app.route('/api/force_outcome_update', methods=['POST'])
 @mt5_required
 def handle_force_outcome_update():
-    """Manually triggers the trade outcome check and returns a detailed summary."""
+    """
+    Manually triggers the trade outcome check and returns a detailed summary.
+    Accepts a JSON body with `ignore_magic_number: true` to update all trades.
+    """
     try:
-        print("Manual trade outcome update triggered via API.")
-        summary = _update_trade_outcomes()
+        data = request.get_json() or {}
+        ignore_magic = data.get('ignore_magic_number', False)
+
+        print(f"Manual trade outcome update triggered via API. Ignore Magic: {ignore_magic}")
+        summary = _update_trade_outcomes(ignore_magic_number=ignore_magic)
         return jsonify(summary)
     except Exception as e:
         print(f"Error during manual outcome update: {e}")
