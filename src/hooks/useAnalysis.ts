@@ -76,10 +76,15 @@ export const useAnalysis = () => {
     }
   }, [showAlert]);
 
+  const clearAnalysis = useCallback(() => {
+    setAnalysisResult(null);
+  }, []);
+
   return {
     isAnalyzing,
     analysisResult,
     analysisProgress,
     performAnalysis,
+    clearAnalysis,
   };
 };

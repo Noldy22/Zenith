@@ -43,7 +43,7 @@ export default function ChartsPage() {
   const timeframeDropdownRef = useRef<HTMLDivElement>(null);
   const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const { isAnalyzing, analysisResult, analysisProgress, performAnalysis } = useAnalysis();
+  const { isAnalyzing, analysisResult, analysisProgress, performAnalysis, clearAnalysis } = useAnalysis();
   const [lotSize, setLotSize] = useState('0.01');
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
@@ -66,7 +66,7 @@ export default function ChartsPage() {
 
   const fetchChartData = useCallback(() => {
     setIsLoading(true);
-    setAnalysisResult(null);
+    clearAnalysis();
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
       setIsLoading(false);
