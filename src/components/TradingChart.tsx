@@ -16,6 +16,18 @@ interface LiquidityPoint {
     price: number;
 }
 
+interface Divergence {
+    type: 'Bullish' | 'Bearish';
+    time: Time;
+    price: number;
+}
+
+interface EmaCross {
+    type: 'Golden Cross' | 'Death Cross';
+    time: Time;
+    price: number;
+}
+
 interface Suggestion {
     action: 'Buy' | 'Sell' | 'Neutral';
     entry: number | null;
@@ -45,12 +57,14 @@ export const TradingChart = (props: {
     sellSideLiquidity?: LiquidityPoint[]; // Changed from number[]
     suggestion?: Suggestion;
     candlestickPatterns?: CandlestickPattern[];
+    rsiDivergences?: Divergence[];
+    emaCrosses?: EmaCross[];
 }) => {
     const {
         data, onChartReady, supportLevels, resistanceLevels,
         demandZones, supplyZones, bullishOBs, bearishOBs,
         bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity,
-        suggestion, candlestickPatterns
+        suggestion, candlestickPatterns, rsiDivergences, emaCrosses
     } = props;
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -157,6 +171,24 @@ export const TradingChart = (props: {
             const bslMarkers: SeriesMarker<Time>[] = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar' as SeriesMarkerPosition, color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
             const sslMarkers: SeriesMarker<Time>[] = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar' as SeriesMarkerPosition, color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
+            // --- NEW: RSI Divergence and EMA Cross Markers ---
+            const rsiDivMarkers: SeriesMarker<Time>[] = (rsiDivergences || []).map(d => ({
+                time: d.time,
+                position: d.type === 'Bearish' ? 'aboveBar' : 'belowBar',
+                color: d.type === 'Bearish' ? '#FF00FF' : '#00FFFF', // Magenta for Bearish, Cyan for Bullish
+                shape: d.type === 'Bearish' ? 'arrowDown' : 'arrowUp',
+                text: d.type.substring(0, 4) + ' Div'
+            }));
+
+            const emaCrossMarkers: SeriesMarker<Time>[] = (emaCrosses || []).map(c => ({
+                time: c.time,
+                position: 'inBar', // Position crosses inside the bar for clarity
+                color: c.type === 'Golden Cross' ? '#FFD700' : '#808080', // Gold for Golden, Gray for Death
+                shape: 'circle',
+                text: c.type
+            }));
+            // --- END NEW ---
+
             // --- **UPDATED** Pattern Prioritization Logic ---
             const patternPriority: { [key: string]: number } = {
                 'ENGULFING': 1,
@@ -198,7 +230,7 @@ export const TradingChart = (props: {
             }));
             // --- End of New Logic ---
 
-            const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
+            const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers, ...rsiDivMarkers, ...emaCrossMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
             candlestickSeries.setMarkers(allMarkers);
 
             // Draw Suggestion Lines
@@ -244,6 +276,7 @@ export const TradingChart = (props: {
         data, supportLevels, resistanceLevels, demandZones, supplyZones,
         bullishOBs, bearishOBs, bullishFVGs, bearishFVGs,
         buySideLiquidity, sellSideLiquidity, suggestion, candlestickPatterns,
+        rsiDivergences, emaCrosses, // Add new props to dependency array
         onChartReady
     ]);
 

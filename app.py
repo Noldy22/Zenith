@@ -21,7 +21,9 @@ from dotenv import load_dotenv
 from analysis import (
     find_levels, find_sd_zones, find_order_blocks, find_liquidity_pools,
     find_fvgs, find_candlestick_patterns, get_trade_suggestion,
-    calculate_confidence, generate_market_narrative, determine_market_structure
+    calculate_confidence, generate_market_narrative, determine_market_structure,
+    calculate_volume_profile, calculate_rsi, find_rsi_divergence,
+    calculate_emas, find_ema_crosses
 )
 # Make sure all necessary functions from learning are imported
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features, predict_success_rate
@@ -359,31 +361,40 @@ def get_gemini_analysis(analysis_data):
         }
 
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-1.0-pro') # Using 1.0 Pro for potentially better reasoning
         prompt = f"""
-        As a professional trading analyst AI, your task is to identify a high-probability trading setup based on the provided market data.
+        As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from a multi-timeframe analysis narrative.
 
-        **Market Data:**
+        **Aggregated Market Data:**
+        ```json
         {json.dumps(analysis_data, indent=2)}
+        ```
 
         **Instructions:**
-        1.  **Analyze the Confluence:** Synthesize all the provided data points (market structure, zones, liquidity, patterns).
-        2.  **Determine Bias:** Decide on a clear bullish, bearish, or neutral bias.
-        3.  **Formulate a Trade Plan:** If a bias exists, create a precise trade plan.
-        4.  **Provide Output in JSON Format ONLY:** Your entire response must be a single, valid JSON object with no other text or formatting.
+        1.  **Synthesize the Narrative:** Create a coherent market narrative by synthesizing the data. Pay close attention to how higher timeframe (HTF) structure aligns with lower timeframe (LTF) entry signals. For example, a downtrend on H4 gives more weight to a bearish setup on M15.
+        2.  **Identify Confluence:** Look for powerful confluence points. A setup is strongest when multiple factors align (e.g., price entering a demand zone, showing a bullish RSI divergence, and printing a bullish engulfing candle).
+        3.  **Consider the Contrarian View:** Briefly state the strongest argument *against* your proposed trade. This ensures a balanced analysis. For example, "The contrarian view is that the overall H4 trend is bearish, and this could be a minor pullback before continuation."
+        4.  **Formulate a Precise Trade Plan:** Based on your analysis, propose a single, actionable trade plan. If no high-probability setup exists, classify the action as "Neutral".
+        5.  **Provide Output in JSON Format ONLY:** Your entire response must be a single, valid JSON object with no other text or formatting.
 
         **JSON Output Structure:**
         {{
           "action": "Buy",
-          "reason": "A concise, expert-level justification for the trade (max 2-3 sentences).",
+          "reason": "A concise, expert-level justification for the trade (max 3 sentences), incorporating the multi-timeframe narrative.",
+          "contrarian_view": "The strongest argument against this trade.",
           "entry": 1.23456,
           "sl": 1.23300,
           "tp": 1.23800
         }}
 
-        **Action Values:** "Buy", "Sell", or "Neutral".
-        - If "Neutral", the reason should explain why there is no clear setup, and entry/sl/tp should be null.
-        - Entry, SL, and TP must be floating-point numbers.
+        **Key Points for Analysis:**
+        - **Market Structure (HTF is king):** Is the primary trend bullish (HH/HL) or bearish (LL/LH)?
+        - **EMAs:** Is the price above or below the key EMAs (21, 50, 200)? Has a recent Golden/Death Cross occurred?
+        - **RSI:** Is the RSI overbought (>70), oversold (<30), or showing divergence? A bearish divergence in an uptrend is a powerful warning sign.
+        - **Key Zones:** Is the price reacting to a fresh Supply/Demand zone, Order Block, or FVG?
+        - **Liquidity:** Where are the obvious liquidity pools (equal highs/lows) that might be targeted?
+
+        **Example Reason:** "The H4 chart is in a clear uptrend with price respecting the 50 EMA. On the M15, a bullish RSI divergence has formed as price pulls back into a key demand zone, suggesting a high-probability long entry to target the buy-side liquidity at 1.24000."
         """
         response = model.generate_content(prompt)
         # Clean up the response to ensure it's valid JSON
@@ -407,6 +418,23 @@ def _run_single_timeframe_analysis(df, symbol):
         # Perform all the existing technical analysis
         socketio.emit('analysis_progress', {'message': 'Finding support and resistance...'})
         analysis["support"], analysis["resistance"], pivots = find_levels(df)
+
+        # --- NEW: Integrate advanced indicators ---
+        socketio.emit('analysis_progress', {'message': 'Calculating EMAs and crosses...'})
+        emas = calculate_emas(df)
+        analysis["ema_crosses"] = find_ema_crosses(df, emas)
+        # Add latest EMA values for context
+        analysis["emas"] = {key: val.iloc[-1] for key, val in emas.items()}
+
+        socketio.emit('analysis_progress', {'message': 'Calculating RSI and divergence...'})
+        rsi = calculate_rsi(df)
+        analysis["rsi_value"] = rsi.iloc[-1]
+        analysis["rsi_divergence"] = find_rsi_divergence(df, rsi, pivots)
+
+        socketio.emit('analysis_progress', {'message': 'Calculating Volume Profile...'})
+        analysis["volume_profile"] = calculate_volume_profile(df)
+        # --- END NEW ---
+
         socketio.emit('analysis_progress', {'message': 'Determining market structure...'})
         analysis["market_structure"] = determine_market_structure(pivots)
         socketio.emit('analysis_progress', {'message': 'Finding demand and supply zones...'})

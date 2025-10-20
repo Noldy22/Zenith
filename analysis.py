@@ -30,6 +30,98 @@ def _merge_zones(zones, tolerance_multiplier=0.5):
 
     return merged_zones
 
+# --- NEW INDICATOR FUNCTIONS ---
+
+def calculate_volume_profile(df, bins=20):
+    """Calculates a simple volume profile."""
+    if 'volume' not in df.columns:
+        # If no real volume data, use tick volume as a proxy
+        df['volume'] = df.get('tick_volume', pd.Series(np.ones(len(df)), index=df.index))
+
+    price_range = pd.cut(df['close'], bins=bins)
+    volume_distribution = df.groupby(price_range)['volume'].sum()
+
+    poc_level = volume_distribution.idxmax().mid if not volume_distribution.empty else 0
+    hvn_levels = volume_distribution[volume_distribution > volume_distribution.quantile(0.75)]
+
+    return {
+        "poc": poc_level,
+        "hvns": [interval.mid for interval in hvn_levels.index]
+    }
+
+def calculate_rsi(df, period=14):
+    """Calculates the Relative Strength Index (RSI)."""
+    rsi = df.ta.rsi(length=period)
+    return rsi
+
+def find_rsi_divergence(df, rsi, pivots):
+    """Identifies bullish and bearish RSI divergence."""
+    divergences = []
+    swing_highs = [p for p in pivots if p['type'] == 'high']
+    swing_lows = [p for p in pivots if p['type'] == 'low']
+
+    # Bearish Divergence: Higher High in price, Lower High in RSI
+    if len(swing_highs) >= 2:
+        for i in range(1, len(swing_highs)):
+            p1_price, p2_price = swing_highs[i-1]['price'], swing_highs[i]['price']
+            p1_rsi, p2_rsi = rsi.iloc[swing_highs[i-1]['index']], rsi.iloc[swing_highs[i]['index']]
+
+            if p2_price > p1_price and p2_rsi < p1_rsi:
+                divergences.append({
+                    'type': 'Bearish',
+                    'time': int(df.iloc[swing_highs[i]['index']]['time']),
+                    'price': p2_price
+                })
+
+    # Bullish Divergence: Lower Low in price, Higher Low in RSI
+    if len(swing_lows) >= 2:
+        for i in range(1, len(swing_lows)):
+            p1_price, p2_price = swing_lows[i-1]['price'], swing_lows[i]['price']
+            p1_rsi, p2_rsi = rsi.iloc[swing_lows[i-1]['index']], rsi.iloc[swing_lows[i]['index']]
+
+            if p2_price < p1_price and p2_rsi > p1_rsi:
+                divergences.append({
+                    'type': 'Bullish',
+                    'time': int(df.iloc[swing_lows[i]['index']]['time']),
+                    'price': p2_price
+                })
+
+    return divergences[-2:] # Return the 2 most recent
+
+def calculate_emas(df, periods=[21, 50, 200]):
+    """Calculates multiple Exponential Moving Averages (EMAs)."""
+    emas = {}
+    for period in periods:
+        emas[f'EMA_{period}'] = df.ta.ema(length=period)
+    return emas
+
+def find_ema_crosses(df, emas, lookback=5):
+    """Detects golden cross (e.g., EMA50 crosses above EMA200) and death cross."""
+    crosses = []
+    ema_short = emas.get('EMA_50')
+    ema_long = emas.get('EMA_200')
+
+    if ema_short is None or ema_long is None:
+        return []
+
+    # Check for crosses in the recent lookback period
+    for i in range(len(df) - lookback, len(df)):
+        # Golden Cross
+        if ema_short.iloc[i-1] < ema_long.iloc[i-1] and ema_short.iloc[i] > ema_long.iloc[i]:
+            crosses.append({
+                'type': 'Golden Cross',
+                'time': int(df.iloc[i]['time']),
+                'price': df.iloc[i]['close']
+            })
+        # Death Cross
+        if ema_short.iloc[i-1] > ema_long.iloc[i-1] and ema_short.iloc[i] < ema_long.iloc[i]:
+            crosses.append({
+                'type': 'Death Cross',
+                'time': int(df.iloc[i]['time']),
+                'price': df.iloc[i]['close']
+            })
+    return crosses
+
 # --- CORE ANALYSIS FUNCTIONS ---
 
 def find_levels(data, window=5):
