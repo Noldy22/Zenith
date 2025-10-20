@@ -16,18 +16,6 @@ export const useAnalysis = () => {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState('');
-  const socketRef = useRef<Socket | null>(null);
-
-  useEffect(() => {
-    socketRef.current = io(getBackendUrl());
-    socketRef.current.on('analysis_progress', (data) => {
-      setAnalysisProgress(data.message);
-    });
-
-    return () => {
-      socketRef.current?.disconnect();
-    };
-  }, []);
 
   const performAnalysis = useCallback(async (activeSymbol: string, activeTimeframe: keyof typeof timeframes) => {
     const storedCreds = localStorage.getItem('mt5_credentials');
@@ -86,5 +74,6 @@ export const useAnalysis = () => {
     analysisProgress,
     performAnalysis,
     clearAnalysis,
+    setAnalysisProgress,
   };
 };

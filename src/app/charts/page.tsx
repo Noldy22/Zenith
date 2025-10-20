@@ -43,7 +43,7 @@ export default function ChartsPage() {
   const timeframeDropdownRef = useRef<HTMLDivElement>(null);
   const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const { isAnalyzing, analysisResult, analysisProgress, performAnalysis, clearAnalysis } = useAnalysis();
+  const { isAnalyzing, analysisResult, analysisProgress, performAnalysis, clearAnalysis, setAnalysisProgress } = useAnalysis();
   const [lotSize, setLotSize] = useState('0.01');
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
@@ -216,11 +216,7 @@ export default function ChartsPage() {
 
         // New listener for analysis progress
         socketRef.current.on('analysis_progress', (data) => {
-            // A better implementation would be to lift the setAnalysisProgress function
-            // into a shared context or state management library (like Zustand or Redux),
-            // but for simplicity, we'll just log it here for now.
-            // This will be properly implemented when we refactor the hook.
-            console.log('Analysis Progress:', data.message);
+            setAnalysisProgress(data.message);
         });
 
         return () => {
@@ -504,7 +500,7 @@ export default function ChartsPage() {
                         </p>
                     </div>
                     <div>
-                        <h3 className="font-bold text-lg text-yellow-300">AI Suggestion</h3>
+                        <h3 className="font-bold text-lg text-yellow-300">Trade Rationale</h3>
                         <p className="text-gray-300">{analysisResult.suggestion.reason}</p>
                     </div>
                     {/* **UPDATED NARRATIVE DISPLAY** */}
@@ -519,10 +515,6 @@ export default function ChartsPage() {
                             <ul className="list-disc list-inside text-gray-400 italic">
                                 {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
                             </ul>
-                        </div>
-                        <div>
-                            <p className="font-semibold text-gray-200">{analysisResult.narrative.prediction_title}</p>
-                            <p className="text-gray-400 italic">{analysisResult.narrative.prediction_body}</p>
                         </div>
                     </div>
                     <div>

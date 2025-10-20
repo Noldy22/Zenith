@@ -16,8 +16,6 @@ export interface Narrative {
   structure_body: string;
   levels_title: string;
   levels_body: string[];
-  prediction_title: string;
-  prediction_body: string;
 }
 export interface AnalysisResult {
   support: number[]; resistance: number[]; demand_zones: Zone[];

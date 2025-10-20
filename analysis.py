@@ -408,7 +408,6 @@ def generate_market_narrative(analysis):
         "structure_title": "Market Structure", "structure_body": reason,
         "levels_title": "Key Levels & Liquidity",
         "levels_body": [],
-        "prediction_title": "AI Prediction", "prediction_body": ""
     }
 
     buy_liq = analysis.get('buy_side_liquidity', [])
@@ -427,12 +426,5 @@ def generate_market_narrative(analysis):
         narrative['levels_body'].append(f"Sell-side liquidity is targeting the equal lows around {max(sell_liq_prices):.5f}.")
     else:
         narrative['levels_body'].append("No significant sell-side liquidity pools identified.")
-
-    if structure == 'Uptrend':
-        narrative['prediction_body'] = "The AI expects the price to continue higher, likely targeting buy-side liquidity after a potential pullback into nearby demand zones or FVGs."
-    elif structure == 'Downtrend':
-        narrative['prediction_body'] = "The AI expects the price to continue lower, likely targeting sell-side liquidity after a potential rally into nearby supply zones or FVGs."
-    else:
-        narrative['prediction_body'] = "The AI expects the price to remain range-bound, potentially sweeping liquidity on either side before a clear trend emerges."
 
     return narrative
