@@ -457,6 +457,9 @@ export default function ChartsPage() {
                 sellSideLiquidity={analysisResult?.sell_side_liquidity}
                 suggestion={analysisResult?.suggestion}
                 candlestickPatterns={analysisResult?.candlestick_patterns}
+                // --- NEW PROPS ---
+                rsiDivergences={analysisResult?.rsi_divergence}
+                emaCrosses={analysisResult?.ema_crosses}
               />
             ) : (
               <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>

@@ -15,28 +15,67 @@ def extract_features(analysis_result):
     """Converts the complex analysis result into a flat dictionary of features for the model."""
     features = {}
     try:
-        # Simple features: number of each type of level/zone found
+        current_price = analysis_result.get('current_price', 0)
+        if current_price == 0: return {} # Cannot calculate proximity with no price
+
+        # --- EXISTING FEATURES ---
         features['num_support'] = len(analysis_result.get('support', []))
         features['num_resistance'] = len(analysis_result.get('resistance', []))
         features['num_demand_zones'] = len(analysis_result.get('demand_zones', []))
         features['num_supply_zones'] = len(analysis_result.get('supply_zones', []))
         features['num_bullish_ob'] = len(analysis_result.get('bullish_ob', []))
         features['num_bearish_ob'] = len(analysis_result.get('bearish_ob', []))
-        # Add FVG counts as potential features if desired
         features['num_bullish_fvg'] = len(analysis_result.get('bullish_fvg', []))
         features['num_bearish_fvg'] = len(analysis_result.get('bearish_fvg', []))
+        features['confidence'] = analysis_result.get('confidence', 0)
+        features['market_structure'] = analysis_result.get('market_structure', ['Ranging'])[0]
 
-        # Categorical features from the suggestion
         suggestion = analysis_result.get('suggestion', {})
         features['action'] = suggestion.get('action', 'Neutral')
-        # Consider making reason more structured or using keywords if it's important
-        # features['reason_keyword'] = suggestion.get('reason', 'None').split(',')[0] # Example: take first part
 
-        # Confidence level as a feature (might need encoding if categorical)
-        features['confidence'] = analysis_result.get('confidence', 0) # Use numerical confidence
+        # --- NEW FEATURES ---
 
-        # Market Structure
-        features['market_structure'] = analysis_result.get('market_structure', ['Ranging'])[0] # Get the string 'Uptrend', 'Downtrend', 'Ranging'
+        # 1. Proximity to Nearest Key Level
+        key_levels = []
+        for zone_list in ['demand_zones', 'bullish_ob', 'bullish_fvg']:
+            key_levels.extend([z['high'] for z in analysis_result.get(zone_list, [])])
+        for zone_list in ['supply_zones', 'bearish_ob', 'bearish_fvg']:
+            key_levels.extend([z['low'] for z in analysis_result.get(zone_list, [])])
+        key_levels.extend(analysis_result.get('support', []))
+        key_levels.extend(analysis_result.get('resistance', []))
+
+        if key_levels:
+            closest_level = min(key_levels, key=lambda x: abs(x - current_price))
+            # Proximity as a percentage of price
+            features['proximity_to_level_pct'] = (abs(current_price - closest_level) / current_price) * 100
+        else:
+            features['proximity_to_level_pct'] = 100 # High value if no levels found
+
+        # 2. RSI and EMA indicators
+        features['rsi_value'] = analysis_result.get('rsi_value', 50) # Default to neutral 50
+
+        emas = analysis_result.get('emas', {})
+        ema_21 = emas.get('EMA_21', 0)
+        ema_50 = emas.get('EMA_50', 0)
+        ema_200 = emas.get('EMA_200', 0)
+
+        # Price position relative to EMAs
+        features['price_vs_ema21'] = 1 if current_price > ema_21 else -1 if ema_21 > 0 else 0
+        features['price_vs_ema50'] = 1 if current_price > ema_50 else -1 if ema_50 > 0 else 0
+        features['price_vs_ema200'] = 1 if current_price > ema_200 else -1 if ema_200 > 0 else 0
+
+        # EMA alignment
+        if ema_21 > ema_50 > ema_200 and ema_200 > 0:
+            features['ema_alignment'] = 'Bullish'
+        elif ema_21 < ema_50 < ema_200 and ema_21 > 0:
+            features['ema_alignment'] = 'Bearish'
+        else:
+            features['ema_alignment'] = 'Mixed'
+
+        # Add count of recent divergences/crosses
+        features['num_rsi_divergence'] = len(analysis_result.get('rsi_divergence', []))
+        features['num_ema_crosses'] = len(analysis_result.get('ema_crosses', []))
+
 
     except Exception as e:
         print(f"Error extracting features: {e}")
