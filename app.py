@@ -569,7 +569,7 @@ def _execute_trade_logic(creds, trade_params):
         "magic": 234000, # Magic number for Zenith trades
         "comment": "Zenith AI Trade",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC, # Changed to IOC for better chance of partial fill
+        "type_filling": mt5.ORDER_FILLING_FOK, # Changed to FOK to fix 'Unsupported filling mode' error
     }
     print(f"Sending trade request: {request}")
 
