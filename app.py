@@ -361,7 +361,7 @@ def get_gemini_analysis(analysis_data):
         }
 
     try:
-        model = genai.GenerativeModel('gemini-1.0-pro') # Using 1.0 Pro for potentially better reasoning
+        model = genai.GenerativeModel('gemini-2.5-flash') # Using 1.0 Pro for potentially better reasoning
         prompt = f"""
         As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from a multi-timeframe analysis narrative.
 
