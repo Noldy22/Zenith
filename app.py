@@ -1168,6 +1168,52 @@ def handle_chat():
         return jsonify({"error": f"An error occurred in the chat service: {e}"}), 500
 
 
+# --- New Model Training Endpoint ---
+@app.route('/api/train_model', methods=['POST'])
+def handle_train_model():
+    """Endpoint to trigger model training from historical data."""
+    try:
+        # Connect to the database and fetch all trades
+        conn = sqlite3.connect('trades.db', check_same_thread=False)
+        # Make the cursor return rows as dictionaries
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT outcome, analysis_json FROM trades WHERE outcome != -1 AND analysis_json IS NOT NULL")
+        trades_data = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        print(f"Fetched {len(trades_data)} trades from DB for training.")
+
+        if not trades_data:
+            return jsonify({"error": "No training data available in the database."}), 400
+
+        # Call the training function from learning.py
+        result = train_and_save_model(trades_data)
+
+        if "error" in result:
+            # If training failed, return the error message
+            return jsonify(result), 400
+        else:
+            # --- IMPORTANT: Reload the model into the app state after successful training ---
+            print("Training successful. Reloading model and vectorizer into application state...")
+            STATE.ml_model, STATE.ml_vectorizer = get_model_and_vectorizer()
+            if STATE.ml_model is not None and STATE.ml_vectorizer is not None:
+                print("Model reloaded successfully.")
+                return jsonify(result)
+            else:
+                print("Critical Error: Model trained but failed to reload into state.")
+                return jsonify({"error": "Model trained but failed to load. Please restart the server."}), 500
+
+    except sqlite3.Error as db_e:
+        print(f"Database error during model training: {db_e}")
+        return jsonify({"error": f"Database error: {db_e}"}), 500
+    except Exception as e:
+        print(f"An unexpected error occurred during model training: {e}")
+        traceback.print_exc()
+        return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
+
+
 # --- SocketIO Events ---
 @socketio.on('connect')
 def handle_connect():
