@@ -134,6 +134,8 @@ class AppState:
     def __init__(self):
         self.autotrade_running = False
         self.autotrade_thread = None
+        self.monitoring_running = False
+        self.monitoring_thread = None
         self.settings = {
             "trading_style": "DAY_TRADING",
             "risk_per_trade": 2.0,
@@ -576,6 +578,76 @@ def _execute_trade_logic(creds, trade_params):
     return result
 
 
+def _update_trade_outcomes(ignore_magic_number=False):
+    """
+    Checks for closed trades and updates their outcomes in the database.
+    Returns a dictionary summarizing the operation.
+    """
+    print(f"Running trade outcome check... (Ignore Magic Number: {ignore_magic_number})")
+    summary = {
+        "deals_found_in_history": 0,
+        "pending_trades_in_db": 0,
+        "trades_updated": 0,
+        "error": None,
+        "magic_number_ignored": ignore_magic_number
+    }
+    try:
+        from_date = datetime.now() - timedelta(days=90)
+        history_deals = mt5.history_deals_get(from_date, datetime.now())
+
+        if history_deals is None:
+            error_msg = f"Could not get trade history from MT5. Error: {mt5.last_error()}"
+            print(error_msg)
+            summary["error"] = error_msg
+            return summary
+
+        summary["deals_found_in_history"] = len(history_deals)
+
+        conn = sqlite3.connect('trades.db', check_same_thread=False)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, order_id FROM trades WHERE outcome = -1")
+        pending_trades = {row[1]: row[0] for row in cursor.fetchall()}
+        summary["pending_trades_in_db"] = len(pending_trades)
+
+        if not pending_trades:
+            conn.close()
+            return summary
+
+        updated_count = 0
+        for deal in history_deals:
+            # The condition to check if a deal corresponds to a pending trade
+            is_matching_deal = (
+                deal.order in pending_trades and
+                deal.entry == 1 and
+                (ignore_magic_number or deal.magic == 234000) # Conditionally check magic number
+            )
+
+            if is_matching_deal:
+                outcome = 1 if deal.profit >= 0 else 0
+                db_id = pending_trades[deal.order]
+                cursor.execute("UPDATE trades SET outcome = ? WHERE id = ?", (outcome, db_id))
+                updated_count += 1
+                # Remove the trade from pending_trades to avoid updating it again with another deal
+                del pending_trades[deal.order]
+                print(f"Updated outcome for Order ID {deal.order} (DB ID: {db_id}) to {outcome} (Profit: {deal.profit})")
+
+
+        if updated_count > 0:
+            conn.commit()
+            print(f"Committed {updated_count} trade outcome updates to the database.")
+
+        summary["trades_updated"] = updated_count
+        conn.close()
+
+    except Exception as e:
+        error_msg = f"An unexpected error occurred in _update_trade_outcomes: {e}"
+        print(error_msg)
+        traceback.print_exc()
+        summary["error"] = error_msg
+
+    return summary
+
 # --- Auto-Trading Loop (Modified to use ML prediction potentially) ---
 # (Keep the trading_loop function as previously updated)
 def trading_loop():
@@ -740,6 +812,20 @@ def trading_loop():
             time.sleep(60) # Wait a minute before the next full scan
 
     print("Auto-trading thread stopped.")
+
+
+def trade_monitoring_loop():
+    """Background thread loop to check for closed trade outcomes."""
+    print("Trade outcome monitoring thread started.")
+    while STATE.monitoring_running:
+        if mt5_manager.is_initialized:
+            _update_trade_outcomes()
+        else:
+            print("Trade Monitor: MT5 not connected, skipping check.")
+
+        # Wait for 5 minutes (300 seconds) before the next check
+        time.sleep(300)
+    print("Trade outcome monitoring thread stopped.")
 
 
 # --- API Routes ---
@@ -1169,6 +1255,26 @@ def handle_chat():
 
 
 # --- New Model Training Endpoint ---
+@app.route('/api/force_outcome_update', methods=['POST'])
+@mt5_required
+def handle_force_outcome_update():
+    """
+    Manually triggers the trade outcome check and returns a detailed summary.
+    Accepts a JSON body with `ignore_magic_number: true` to update all trades.
+    """
+    try:
+        data = request.get_json() or {}
+        ignore_magic = data.get('ignore_magic_number', False)
+
+        print(f"Manual trade outcome update triggered via API. Ignore Magic: {ignore_magic}")
+        summary = _update_trade_outcomes(ignore_magic_number=ignore_magic)
+        return jsonify(summary)
+    except Exception as e:
+        print(f"Error during manual outcome update: {e}")
+        traceback.print_exc()
+        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
+
+
 @app.route('/api/train_model', methods=['POST'])
 def handle_train_model():
     """Endpoint to trigger model training from historical data."""
@@ -1245,14 +1351,21 @@ def handle_unsubscribe(data):
 # --- Main Execution ---
 if __name__ == '__main__':
     init_db()
-    STATE.load_settings() # Load settings and attempt initial MT5 connection
+    STATE.load_settings()
 
-    # Start auto-trading loop if enabled in loaded settings
+    # --- Start Background Threads ---
+    # 1. Start Trade Outcome Monitoring
+    if not STATE.monitoring_running:
+        STATE.monitoring_running = True
+        STATE.monitoring_thread = threading.Thread(target=trade_monitoring_loop, daemon=True)
+        STATE.monitoring_thread.start()
+        print("Started trade outcome monitoring thread.")
+
+    # 2. Start Auto-Trading Loop (if enabled in settings)
     if STATE.settings.get('auto_trading_enabled') and not STATE.autotrade_running:
-        # Make sure MT5 is actually connected before starting the loop
         if mt5_manager.is_initialized:
             with STATE.lock:
-                if not STATE.autotrade_running: # Double check after acquiring lock
+                if not STATE.autotrade_running:
                     STATE.autotrade_running = True
                     STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
                     STATE.autotrade_thread.start()
@@ -1260,15 +1373,13 @@ if __name__ == '__main__':
         else:
             print("Auto-trading enabled in settings, but MT5 connection failed on startup. Loop not started.")
 
-
-    # Use 0.0.0.0 to make accessible on the local network
-    # Added debug=True for development, use_reloader=False for thread stability
     print(f"Starting Flask-SocketIO server on http://0.0.0.0:5000")
     try:
-        # Allow unsafe Werkzeug for development debugging if needed, but be cautious
-        # socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)
         socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
     finally:
-         # Ensure MT5 connection is shut down when the app exits
-         print("Flask app shutting down, ensuring MT5 is disconnected.")
-         mt5_manager.shutdown_mt5()
+        print("Flask app shutting down...")
+        # Signal threads to stop
+        STATE.autotrade_running = False
+        STATE.monitoring_running = False
+        # Shut down MT5 connection
+        mt5_manager.shutdown_mt5()
