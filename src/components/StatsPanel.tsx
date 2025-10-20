@@ -13,7 +13,7 @@ const StatsPanel = () => {
         dailyPnl: 8.50,
     };
 
-    const getPnlColor = (pnl) => {
+    const getPnlColor = (pnl: number) => {
         if (pnl > 0) return 'text-green-400';
         if (pnl < 0) return 'text-red-400';
         return 'text-gray-400';
