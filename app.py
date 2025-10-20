@@ -1230,6 +1230,20 @@ def handle_chat():
 
 
 # --- New Model Training Endpoint ---
+@app.route('/api/force_outcome_update', methods=['POST'])
+@mt5_required
+def handle_force_outcome_update():
+    """Manually triggers the trade outcome check."""
+    try:
+        print("Manual trade outcome update triggered via API.")
+        _update_trade_outcomes()
+        return jsonify({"message": "Trade outcome check completed. Check server logs for details."})
+    except Exception as e:
+        print(f"Error during manual outcome update: {e}")
+        traceback.print_exc()
+        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
+
+
 @app.route('/api/train_model', methods=['POST'])
 def handle_train_model():
     """Endpoint to trigger model training from historical data."""
