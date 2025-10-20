@@ -517,10 +517,6 @@ export default function ChartsPage() {
                             </ul>
                         </div>
                     </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-gray-300 mt-3">Precautions</h3>
-                        <ul className="list-disc list-inside text-gray-400 text-xs space-y-1">{analysisResult.precautions.map((p, i) => <li key={i}>{p}</li>)}</ul>
-                    </div>
                     {analysisResult.suggestion.action !== 'Neutral' && (
                         <div className="mt-6 border-t border-border pt-4">
                             <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>

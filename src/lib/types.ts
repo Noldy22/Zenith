@@ -25,6 +25,6 @@ export interface AnalysisResult {
   sell_side_liquidity: LiquidityPoint[];
   candlestick_patterns: CandlestickPattern[]; suggestion: Suggestion;
   narrative: Narrative;
-  confidence: number; precautions: string[];
+  confidence: number;
   predicted_success_rate?: string;
 }

@@ -433,11 +433,6 @@ def _run_single_timeframe_analysis(df, symbol):
         predicted_rate = predict_success_rate(analysis, STATE.ml_model, STATE.ml_vectorizer)
         analysis["predicted_success_rate"] = predicted_rate
 
-        analysis['precautions'] = [
-            "This is an AI-generated analysis, not financial advice.",
-            "Always perform your own due diligence before trading."
-        ]
-
     except Exception as e:
         print(f"Error during single timeframe analysis for {symbol}: {e}")
         traceback.print_exc()
