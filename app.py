@@ -1597,8 +1597,9 @@ def get_daily_stats():
 
         # Filter for deals that are closing trades (entry type 'OUT' or 'OUT_BY') and belong to the bot
         # DEAL_ENTRY_OUT = 1 (Normal close)
+        # DEAL_ENTRY_INOUT = 2 (Reversal, which closes the previous position)
         # DEAL_ENTRY_OUT_BY = 3 (Closed by Stop Loss or Take Profit)
-        closed_trades = [d for d in history_deals if d.entry in (1, 3) and d.magic == 234000]
+        closed_trades = [d for d in history_deals if d.entry in (1, 2, 3) and d.magic == 234000]
         logging.info(f"Filtered down to {len(closed_trades)} closed bot trades.")
 
         # Log details of all found deals for debugging
