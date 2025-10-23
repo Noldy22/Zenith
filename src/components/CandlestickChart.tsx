@@ -3,18 +3,31 @@
 import { createChart, ColorType } from 'lightweight-charts';
 import { useEffect, useRef } from 'react';
 
-const CandlestickChart = ({ credentials, symbol, timeframe }) => {
-    const chartContainerRef = useRef();
-    const chartRef = useRef();
+interface Props {
+    credentials?: { login?: string } | null;
+    symbol: string;
+    timeframe: string;
+}
+
+const CandlestickChart = ({ credentials, symbol, timeframe }: Props) => {
+    const chartContainerRef = useRef<HTMLDivElement | null>(null);
+    const chartRef = useRef<any>(null);
 
     useEffect(() => {
         if (!credentials || !credentials.login) return;
 
         const handleResize = () => {
-            chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
+            const container = chartContainerRef.current;
+            const chart = chartRef.current;
+            if (!container || !chart) return;
+            chart.applyOptions({ width: container.clientWidth });
         };
 
-        chartRef.current = createChart(chartContainerRef.current, {
+        // create chart once
+        const container = chartContainerRef.current;
+        if (!container) return;
+
+        chartRef.current = createChart(container, {
             layout: {
                 background: { type: ColorType.Solid, color: '#1f2937' },
                 textColor: '#d1d5db',
@@ -23,7 +36,7 @@ const CandlestickChart = ({ credentials, symbol, timeframe }) => {
                 vertLines: { color: '#374151' },
                 horzLines: { color: '#374151' },
             },
-            width: chartContainerRef.current.clientWidth,
+            width: container.clientWidth,
             height: 400,
         });
 
@@ -58,7 +71,10 @@ const CandlestickChart = ({ credentials, symbol, timeframe }) => {
         window.addEventListener('resize', handleResize);
         return () => {
             window.removeEventListener('resize', handleResize);
-            chartRef.current.remove();
+            if (chartRef.current) {
+                chartRef.current.remove();
+                chartRef.current = null;
+            }
         };
     }, [credentials, symbol, timeframe]);
 
