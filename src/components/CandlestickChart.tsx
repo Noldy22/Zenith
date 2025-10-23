@@ -1,118 +1,86 @@
 "use client";
 
-import {
-  createChart,
-  ColorType,
-  ISeriesApi,
-  IChartApi,
-  CandlestickData,
-  SeriesMarker,
-  Time,
-} from "lightweight-charts";
-import { useEffect, useRef } from "react";
-import { formatMarkers, formatZones, formatLines } from "@/lib/chartUtils";
-import { Zone, Line, Pattern, Suggestion } from "@/lib/types";
+import { createChart, ColorType } from 'lightweight-charts';
+import { useEffect, useRef } from 'react';
 
-interface TradingChartProps {
-  data: CandlestickData[];
-  onChartReady?: (chart: IChartApi) => void;
-  onSeriesReady?: (series: ISeriesApi<"Candlestick">) => void;
-  supportLevels?: Line[];
-  resistanceLevels?: Line[];
-  demandZones?: Zone[];
-  supplyZones?: Zone[];
-  bullishOBs?: Zone[];
-  bearishOBs?: Zone[];
-  bullishFVGs?: Zone[];
-  bearishFVGs?: Zone[];
-  buySideLiquidity?: Line[];
-  sellSideLiquidity?: Line[];
-  candlestickPatterns?: Pattern[];
-  suggestion?: Suggestion;
+interface Props {
+    credentials?: { login?: string } | null;
+    symbol: string;
+    timeframe: string;
 }
 
-export function TradingChart({
-  data,
-  onChartReady,
-  onSeriesReady,
-  supportLevels = [],
-  resistanceLevels = [],
-  demandZones = [],
-  supplyZones = [],
-  bullishOBs = [],
-  bearishOBs = [],
-  bullishFVGs = [],
-  bearishFVGs = [],
-  buySideLiquidity = [],
-  sellSideLiquidity = [],
-  candlestickPatterns = [],
-  suggestion,
-}: TradingChartProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+const CandlestickChart = ({ credentials, symbol, timeframe }: Props) => {
+    const chartContainerRef = useRef<HTMLDivElement | null>(null);
+    const chartRef = useRef<any>(null);
 
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
+    useEffect(() => {
+        if (!credentials || !credentials.login) return;
 
-    const chart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: "#131722" },
-        textColor: "rgba(255, 255, 255, 0.9)",
-      },
-      grid: {
-        vertLines: { color: "#334158" },
-        horzLines: { color: "#334158" },
-      },
-      width: chartContainerRef.current.clientWidth,
-      height: chartContainerRef.current.clientHeight,
-    });
-    chartRef.current = chart;
-    if (onChartReady) {
-      onChartReady(chart);
-    }
+        const handleResize = () => {
+            const container = chartContainerRef.current;
+            const chart = chartRef.current;
+            if (!container || !chart) return;
+            chart.applyOptions({ width: container.clientWidth });
+        };
 
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: "#26a69a",
-      downColor: "#ef5350",
-      borderDownColor: "#ef5350",
-      borderUpColor: "#26a69a",
-      wickDownColor: "#ef5350",
-      wickUpColor: "#26a69a",
-    });
-    seriesRef.current = candleSeries;
-    if (onSeriesReady) {
-      onSeriesReady(candleSeries);
-    }
+        // create chart once
+        const container = chartContainerRef.current;
+        if (!container) return;
 
-    const handleResize = () => {
-      chart.applyOptions({
-        width: chartContainerRef.current!.clientWidth,
-        height: chartContainerRef.current!.clientHeight,
-      });
-    };
+        chartRef.current = createChart(container, {
+            layout: {
+                background: { type: ColorType.Solid, color: '#1f2937' },
+                textColor: '#d1d5db',
+            },
+            grid: {
+                vertLines: { color: '#374151' },
+                horzLines: { color: '#374151' },
+            },
+            width: container.clientWidth,
+            height: 400,
+        });
 
-    window.addEventListener("resize", handleResize);
+        const candleSeries = chartRef.current.addCandlestickSeries({
+            upColor: '#22c55e',
+            downColor: '#ef4444',
+            borderDownColor: '#ef4444',
+            borderUpColor: '#22c55e',
+            wickDownColor: '#ef4444',
+            wickUpColor: '#22c55e',
+        });
 
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      chart.remove();
-    };
-  }, [onChartReady, onSeriesReady]);
+        // Fetch initial data
+        const fetchChartData = async () => {
+            try {
+                const response = await fetch(`http://${window.location.hostname}:5000/api/get_chart_data`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...credentials, symbol, timeframe }),
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    candleSeries.setData(data);
+                }
+            } catch (error) {
+                console.error("Failed to fetch chart data:", error);
+            }
+        };
 
-  useEffect(() => {
-    if (seriesRef.current && data.length > 0) {
-      seriesRef.current.setData(data);
-      chartRef.current?.timeScale().fitContent();
+        fetchChartData();
 
-      // Combine all markers
-      const allMarkers = [
-        ...(candlestickPatterns || []),
-      ];
-      const formattedMarkers = formatMarkers(allMarkers, data);
-      seriesRef.current.setMarkers(formattedMarkers);
-    }
-  }, [data, candlestickPatterns]);
+        window.addEventListener('resize', handleResize);
+        return () => {
+            window.removeEventListener('resize', handleResize);
+            if (chartRef.current) {
+                chartRef.current.remove();
+                chartRef.current = null;
+            }
+        };
+    }, [credentials, symbol, timeframe]);
 
-  return <div ref={chartContainerRef} className="w-full h-full" />;
-}
+    return (
+        <div ref={chartContainerRef} className="w-full h-full" />
+    );
+};
+
+export default CandlestickChart;

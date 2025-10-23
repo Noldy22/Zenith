@@ -1,6 +1,6 @@
 "use client";
 import { useAnalysis } from '@/hooks/useAnalysis';
-import { TradingChart } from "@/components/CandlestickChart";
+import { TradingChart } from "@/components/TradingChart";
 import CandleHighlightAnimation from "@/components/CandleHighlightAnimation";
 import SymbolSearch from "@/components/SymbolSearch";
 import Chat from "@/components/Chat"; // Import the new Chat component

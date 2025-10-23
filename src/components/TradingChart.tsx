@@ -44,7 +44,8 @@ interface CandlestickPattern {
 
 export const TradingChart = (props: {
     data: CandlestickData[];
-    onChartReady: (series: ISeriesApi<"Candlestick">) => void;
+    onChartReady: (chart: IChartApi) => void;
+    onSeriesReady: (series: ISeriesApi<"Candlestick">) => void;
     supportLevels?: number[];
     resistanceLevels?: number[];
     demandZones?: Zone[];
@@ -61,7 +62,7 @@ export const TradingChart = (props: {
     emaCrosses?: EmaCross[];
 }) => {
     const {
-        data, onChartReady, supportLevels, resistanceLevels,
+        data, onChartReady, onSeriesReady, supportLevels, resistanceLevels,
         demandZones, supplyZones, bullishOBs, bearishOBs,
         bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity,
         suggestion, candlestickPatterns, rsiDivergences, emaCrosses
@@ -84,6 +85,8 @@ export const TradingChart = (props: {
             width: chartContainerRef.current.clientWidth,
             height: chartContainerRef.current.clientHeight,
         });
+        onChartReady(chart);
+
 
         const candlestickSeries = chart.addCandlestickSeries({
             upColor: '#26a69a', downColor: '#ef5350', borderDownColor: '#ef5350',
@@ -91,7 +94,7 @@ export const TradingChart = (props: {
             priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
         });
 
-        onChartReady(candlestickSeries);
+        onSeriesReady(candlestickSeries);
 
         // --- 2. DATA & VISUALS ---
         if (data.length > 0) {
@@ -277,7 +280,7 @@ export const TradingChart = (props: {
         bullishOBs, bearishOBs, bullishFVGs, bearishFVGs,
         buySideLiquidity, sellSideLiquidity, suggestion, candlestickPatterns,
         rsiDivergences, emaCrosses, // Add new props to dependency array
-        onChartReady
+        onChartReady, onSeriesReady
     ]);
 
 
