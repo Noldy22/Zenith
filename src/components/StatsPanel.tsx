@@ -70,8 +70,8 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
         if (isLoading) {
             return <p className="text-gray-400 text-center">Loading stats...</p>;
         }
-        if (!stats) {
-            return <p className="text-gray-500 text-center">No trading activity found for today.</p>;
+        if (!stats || stats.trades === 0) {
+            return <p className="text-gray-500 text-center">No closed trades found for today.</p>;
         }
         return (
             <div className="grid grid-cols-2 gap-4 text-sm">

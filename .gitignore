@@ -40,3 +40,10 @@ npm_output.log
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Log files
+*.log

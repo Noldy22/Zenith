@@ -14,6 +14,7 @@ import os
 from functools import wraps
 import socket # Import socket to get local IP
 import traceback # Import traceback for detailed error logging
+import logging
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -74,6 +75,14 @@ print("--- Zenith Backend Configuration ---")
 print(f"Detected Local IP: {local_ip}")
 print(f"Allowed CORS Origins: {allowed_origins}")
 print("---------------------------------")
+
+# --- Logging Configuration ---
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("zenith.log"),
+                        logging.StreamHandler()
+                    ])
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
@@ -1572,22 +1581,39 @@ def get_daily_stats():
     Calculates and returns trading statistics for the current day
     based on the trade history from MT5.
     """
+    logging.info("--- /api/get_daily_stats endpoint hit ---")
     try:
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        logging.info(f"Fetching deals from {today} to now.")
 
         history_deals = mt5.history_deals_get(today, datetime.now())
 
         if history_deals is None:
-            return jsonify({"error": f"Could not get trade history from MT5. Error: {mt5.last_error()}"}), 500
+            error_msg = f"Could not get trade history from MT5. Error: {mt5.last_error()}"
+            logging.error(error_msg)
+            return jsonify({"error": error_msg, "deals_found": 0}), 500
+
+        logging.info(f"Found {len(history_deals)} total deals in MT5 history for today.")
 
         # Filter for deals that are closing trades (entry type 'OUT') and belong to the bot
         closed_trades = [d for d in history_deals if d.entry == 1 and d.magic == 234000]
+        logging.info(f"Filtered down to {len(closed_trades)} closed bot trades.")
+
+        # Log details of all found deals for debugging
+        if len(history_deals) > 0:
+            logging.debug("--- All Deals Found Today ---")
+            for d in history_deals:
+                 logging.debug(f"  - Deal Ticket: {d.ticket}, Order: {d.order}, Symbol: {d.symbol}, Type: {d.type}, Entry: {d.entry}, Magic: {d.magic}, Profit: {d.profit}")
+            logging.debug("-----------------------------")
 
         total_trades = len(closed_trades)
         if total_trades == 0:
+            logging.info("No closed bot trades found for today. Returning zero stats.")
             return jsonify({
                 "trades": 0, "won": 0, "lost": 0,
-                "winRate": "0%", "dailyPnl": 0.0
+                "winRate": "0%", "dailyPnl": 0.0,
+                "message": "No closed trades recorded for the bot today.",
+                "deals_found": len(history_deals)
             })
 
         trades_won = sum(1 for d in closed_trades if d.profit >= 0)
@@ -1600,13 +1626,14 @@ def get_daily_stats():
             "won": trades_won,
             "lost": trades_lost,
             "winRate": f"{win_rate:.1f}%",
-            "dailyPnl": total_pnl
+            "dailyPnl": total_pnl,
+            "deals_found": len(history_deals)
         }
+        logging.info(f"Calculated stats: {stats}")
         return jsonify(stats)
 
     except Exception as e:
-        print(f"Error in get_daily_stats: {e}")
-        traceback.print_exc()
+        logging.critical(f"CRITICAL ERROR in get_daily_stats: {e}", exc_info=True)
         return jsonify({"error": "An unexpected server error occurred."}), 500
 
 # --- SocketIO Events ---
