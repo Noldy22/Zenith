@@ -77,7 +77,7 @@ print(f"Allowed CORS Origins: {allowed_origins}")
 print("---------------------------------")
 
 # --- Logging Configuration ---
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[
                         logging.FileHandler("zenith.log"),
@@ -1595,8 +1595,10 @@ def get_daily_stats():
 
         logging.info(f"Found {len(history_deals)} total deals in MT5 history for today.")
 
-        # Filter for deals that are closing trades (entry type 'OUT') and belong to the bot
-        closed_trades = [d for d in history_deals if d.entry == 1 and d.magic == 234000]
+        # Filter for deals that are closing trades (entry type 'OUT' or 'OUT_BY') and belong to the bot
+        # DEAL_ENTRY_OUT = 1 (Normal close)
+        # DEAL_ENTRY_OUT_BY = 3 (Closed by Stop Loss or Take Profit)
+        closed_trades = [d for d in history_deals if d.entry in (1, 3) and d.magic == 234000]
         logging.info(f"Filtered down to {len(closed_trades)} closed bot trades.")
 
         # Log details of all found deals for debugging
