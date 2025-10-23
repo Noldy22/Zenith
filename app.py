@@ -894,8 +894,9 @@ def trade_monitoring_loop():
         else:
             print("Trade Monitor: MT5 not connected, skipping check.")
 
-        # Wait for 1 minute (60 seconds) for more responsive management
-        time.sleep(60)
+        monitor_wait_time = 1800 # 30 minutes
+        # Wait for 30 minutes (1800 seconds) for more responsive management
+        time.sleep(monitor_wait_time)
     print("Trade outcome monitoring thread stopped.")
 
 
