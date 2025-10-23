@@ -37,8 +37,7 @@ const CandleHighlightAnimation: React.FC<CandleHighlightAnimationProps> = ({ cha
             const priceHigh = series.priceToCoordinate(candle.high);
             const priceLow = series.priceToCoordinate(candle.low);
 
-            // Calculate width based on the next candle's coordinate
-            let width = 10; // Default width
+            let width = 10;
             if (currentIndex + 1 < visibleData.length) {
               const nextCandle = visibleData[currentIndex + 1];
               const nextCoordinate = timeScale.timeToCoordinate(nextCandle.time);
@@ -53,26 +52,31 @@ const CandleHighlightAnimation: React.FC<CandleHighlightAnimationProps> = ({ cha
                 }
             }
 
-
             if (coordinate !== null && priceHigh !== null && priceLow !== null) {
+              const candleHeight = priceLow - priceHigh;
+              const highlightHeight = Math.max(20, candleHeight * 0.5); // Make it 50% of the candle height, with a minimum of 20px
+              const topPosition = priceHigh + (candleHeight / 2) - (highlightHeight / 2); // Center it vertically
+
               setHighlightStyle({
                 display: 'block',
                 position: 'absolute',
-                left: `${coordinate - width/2}px`,
-                top: `${priceHigh}px`,
-                width: `${width}px`,
-                height: `${priceLow - priceHigh}px`,
-                backgroundColor: 'rgba(255, 223, 77, 0.3)',
-                border: '1px solid rgba(255, 223, 77, 0.7)',
+                left: `${coordinate - (width + 4) / 2}px`, // Make it slightly wider than the candle
+                top: `${topPosition}px`,
+                width: `${width + 4}px`,
+                height: `${highlightHeight}px`,
+                backgroundColor: 'rgba(255, 223, 77, 0.4)',
+                border: '1.5px solid rgba(255, 223, 77, 0.8)',
+                borderRadius: '8px', // Rounded corners
                 zIndex: 10,
                 pointerEvents: 'none',
+                transition: 'left 37.5ms linear, top 37.5ms linear' // Smooth transition
               });
             }
 
             currentIndexRef.current = currentIndex + 1;
           }
         }
-        animationFrameId.current = setTimeout(animate, 75); // ~13fps, feels like scanning
+        animationFrameId.current = setTimeout(animate, 37.5); // Doubled the speed (75ms -> 37.5ms)
       };
 
       animate();
