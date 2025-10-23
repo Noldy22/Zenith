@@ -1,31 +1,26 @@
 "use client";
-
 import { useAnalysis } from '@/hooks/useAnalysis';
 import { TradingChart } from "@/components/TradingChart";
-import ChartAnimation from "@/components/ChartAnimation";
+import CandleHighlightAnimation from "@/components/CandleHighlightAnimation";
 import SymbolSearch from "@/components/SymbolSearch";
 import Chat from "@/components/Chat"; // Import the new Chat component
 import { CandlestickData } from "@/lib/alphaVantage";
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { ISeriesApi, Time } from "lightweight-charts";
+import type { ISeriesApi, Time, IChartApi } from "lightweight-charts";
 import { useAlert } from '@/context/AlertContext';
 import { io, Socket } from "socket.io-client";
-
 const getBackendUrl = () => {
     if (typeof window !== 'undefined') {
         return `http://${window.location.hostname}:5000`;
     }
     return 'http://127.0.0.1:5000'; // Default for server-side rendering
 };
-
 import { timeframes, AnalysisResult } from '@/lib/types';
-
 const brokerPaths = {
   'Exness': 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
   'MetaQuotes': 'C:\\Program Files\\MetaTrader 5\\terminal64.exe',
   'Custom': ''
 };
-
 export default function ChartsPage() {
   const { showAlert } = useAlert();
   
@@ -35,9 +30,10 @@ export default function ChartsPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeSymbol, setActiveSymbol] = useState('EURUSD');
   const [activeTimeframe, setActiveTimeframe] = useState('1H');
+  const [chart, setChart] = useState<IChartApi | null>(null);
+  const [series, setSeries] = useState<ISeriesApi<'Candlestick'> | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const socketRef = useRef<Socket | null>(null);
-
   // UI State
   const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
   const timeframeDropdownRef = useRef<HTMLDivElement>(null);
@@ -48,13 +44,11 @@ export default function ChartsPage() {
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
-
   // Auto-Trading State
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
   const [autoTradeLotSize, setAutoTradeLotSize] = useState('0.01');
   const [confidenceThreshold, setConfidenceThreshold] = useState('75');
-
   // MT5 Connection State
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -63,7 +57,6 @@ export default function ChartsPage() {
   const [mt5Server, setMt5Server] = useState('');
   const [mt5TerminalPath, setMt5TerminalPath] = useState(brokerPaths['Exness']);
   const [brokerSelection, setBrokerSelection] = useState<keyof typeof brokerPaths>('Exness');
-
   const fetchChartData = useCallback(() => {
     setIsLoading(true);
     clearAnalysis();
@@ -104,7 +97,6 @@ export default function ChartsPage() {
     })
     .finally(() => setIsLoading(false));
   }, [activeSymbol, activeTimeframe, showAlert]);
-
   useEffect(() => {
     const checkConnection = async () => {
         // Use the definitive credentials from localStorage, not server settings
@@ -116,14 +108,12 @@ export default function ChartsPage() {
                 setMt5Password(credentials.password);
                 setMt5Server(credentials.server);
                 setMt5TerminalPath(credentials.terminal_path);
-
                 // Attempt to connect and get symbols using the correct credentials
                 const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(credentials)
                 });
-
                 if (symbolsResponse.ok) {
                     const newSymbols = await symbolsResponse.json();
                     setSymbols(newSymbols);
@@ -144,7 +134,6 @@ export default function ChartsPage() {
     };
     checkConnection();
   }, []);
-
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);
   
   useEffect(() => {
@@ -166,7 +155,6 @@ export default function ChartsPage() {
         return () => { socketRef.current?.disconnect(); };
     }
   }, [isConnected, activeSymbol, activeTimeframe, showAlert]);
-
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
@@ -176,7 +164,6 @@ export default function ChartsPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
   useEffect(() => {
     const suggestion = analysisResult?.suggestion;
     if (suggestion && suggestion.action !== 'Neutral') {
@@ -187,11 +174,9 @@ export default function ChartsPage() {
         setTakeProfit('');
     }
   }, [analysisResult]);
-
   useEffect(() => {
     if (isConnected) {
         socketRef.current = io(getBackendUrl());
-
         socketRef.current.on('connect', () => {
             console.log('Socket connected for chart updates and analysis!');
             const storedCreds = localStorage.getItem('mt5_credentials');
@@ -203,37 +188,34 @@ export default function ChartsPage() {
                 });
             }
         });
-
         socketRef.current.on('new_bar', (bar: CandlestickData) => {
             if (seriesRef.current) {
                 seriesRef.current.update(bar);
             }
         });
-
         socketRef.current.on('training_complete', (data) => {
             showAlert(data.message, 'success');
         });
-
         // New listener for analysis progress
         socketRef.current.on('analysis_progress', (data) => {
             setAnalysisProgress(data.message);
         });
-
         return () => {
             socketRef.current?.disconnect();
         };
     }
 }, [isConnected, activeSymbol, activeTimeframe, showAlert]);
-
-  const handleChartReady = useCallback((series: ISeriesApi<"Candlestick">) => { seriesRef.current = series; }, []);
-
+  const handleChartReady = useCallback((chart: IChartApi) => { setChart(chart) }, []);
+  const handleSeriesReady = useCallback((series: ISeriesApi<"Candlestick">) => {
+    setSeries(series);
+    seriesRef.current = series;
+   }, []);
   const handleBrokerSelection = (broker: keyof typeof brokerPaths) => {
     setBrokerSelection(broker);
     if (broker !== 'Custom') {
       setMt5TerminalPath(brokerPaths[broker]);
     }
   };
-
   const handleConnect = async () => {
     setIsConnecting(true);
     const credentials = {
@@ -257,7 +239,6 @@ export default function ChartsPage() {
         setIsConnected(true);
         setIsConnectModalOpen(false);
         showAlert('Successfully connected to MT5!', 'success');
-
         if (!newSymbols.includes(activeSymbol)) {
             const defaultSymbol = newSymbols.find(s => s.toUpperCase() === 'EURUSD') || newSymbols[0];
             if (defaultSymbol) {
@@ -271,7 +252,6 @@ export default function ChartsPage() {
         setIsConnecting(false);
     }
   };
-
   const handleDisconnect = () => {
     localStorage.removeItem('mt5_credentials');
     setIsConnected(false);
@@ -280,11 +260,9 @@ export default function ChartsPage() {
     clearAnalysis();
     showAlert('Disconnected from MT5.', 'info');
   };
-
   const handleAnalysis = () => {
     performAnalysis(activeSymbol, activeTimeframe as keyof typeof timeframes);
   };
-
   const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) { showAlert('You are not connected to MT5.', 'error'); return; }
@@ -334,7 +312,6 @@ export default function ChartsPage() {
         showAlert(`Error: ${error.message}`, 'error');
     } finally { setIsTogglingAutoTrade(false); }
   };
-
   return (
     <main className="p-4">
       {isConnectModalOpen && (
@@ -376,7 +353,6 @@ export default function ChartsPage() {
           </div>
         </div>
       )}
-
       {isAutoTradeModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
           <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
@@ -400,7 +376,6 @@ export default function ChartsPage() {
           </div>
         </div>
       )}
-
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="md:col-span-2">
           <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
@@ -440,13 +415,19 @@ export default function ChartsPage() {
             <h1 className="text-3xl font-bold">Trading Chart for {activeSymbol}</h1>
           </div>
           <div className="relative rounded-md overflow-hidden h-[450px] bg-secondary">
-            <ChartAnimation isAnalyzing={isAnalyzing} />
+          <CandleHighlightAnimation
+              chart={chart}
+              series={series}
+              isAnalyzing={isAnalyzing}
+              candleData={chartData}
+            />
             {isLoading ? (
               <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
             ) : chartData.length > 0 ? (
               <TradingChart
                 data={chartData}
                 onChartReady={handleChartReady}
+                onSeriesReady={handleSeriesReady}
                 supportLevels={analysisResult?.support}
                 resistanceLevels={analysisResult?.resistance}
                 demandZones={analysisResult?.demand_zones}
