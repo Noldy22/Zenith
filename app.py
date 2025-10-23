@@ -28,7 +28,9 @@ from analysis import (
 # Make sure all necessary functions from learning are imported
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features, predict_success_rate
 from backtest import run_backtest
-from trade_monitor import manage_breakeven, manage_trailing_stop, monitor_and_close_trades
+# --- MODIFIED IMPORT ---
+# We now import close_trade directly and no longer need monitor_and_close_trades
+from trade_monitor import manage_breakeven, manage_trailing_stop, close_trade
 
 
 # --- Gemini Configuration ---
@@ -479,8 +481,7 @@ def _run_single_timeframe_analysis(df, symbol):
     return analysis
 
 
-# --- Trade Execution Logic (Simplified Size Calc) ---
-# (Keep _calculate_position_size and _execute_trade_logic as previously updated)
+# --- *** MODIFIED: Trade Execution Logic (Simplified Size Calc) *** ---
 def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
     """Simplified position size calculation. Requires symbol info for accuracy."""
     if sl_pips <= 0: return 0.01 # Prevent division by zero or invalid size
@@ -492,26 +493,52 @@ def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
     if mt5_manager.is_initialized:
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info:
-            min_lot = symbol_info.volume_min # Get broker's minimum lot size
+            min_lot = symbol_info.volume_min 
             point = symbol_info.point
             digits = symbol_info.digits
             tick_value = symbol_info.trade_tick_value # Value of one tick (point) movement for one standard lot
+            contract_size = symbol_info.trade_contract_size
 
-            # Determine pip size (usually 10 points, but different for JPY pairs or indices/metals)
-            if digits in (3, 5): # Common for FX pairs like EURUSD (1.23456)
-                pip_size = point * 10
-            elif digits in (2, 4): # Common for JPY pairs like USDJPY (123.45) or some indices
-                pip_size = point * 100
-            else: # Metals like XAUUSD (1234.56) might have different conventions
-                 pip_size = point * 10 # Default guess if unsure
-
-            # Calculate value per pip for one standard lot (check tick_value definition with broker)
-            # Assuming tick_value is for a standard lot (often it is, but verify)
-            if point > 0:
-                value_per_pip_per_lot = (tick_value / point) * pip_size
-            else:
-                 print(f"Warning: Symbol {symbol} has point size 0. Using default pip value.")
-
+            # --- NEW ROBUST PIP VALUE LOGIC ---
+            
+            # Standardize pip size
+            pip_size_in_points = 1
+            if digits in (3, 5): # 5-digit FX (point=0.00001, pip=0.0001) or 3-digit JPY (point=0.001, pip=0.01)
+                pip_size_in_points = 10
+            # For 2 or 4-digit, 1 point = 1 pip, so points_per_pip = 1
+            
+            # Calculate pip value based on points
+            calculated_pip_value = tick_value * pip_size_in_points
+            
+            # --- Broker Data Sanity Check ---
+            # For major FX pairs, 1 pip (0.0001) of 1 lot (100,000) is $10.
+            # If the symbol is a major pair and the broker's tick_value is suspiciously low (like 0.1 instead of 1.0)
+            # it might be off by a factor of 10.
+            
+            is_major_fx = any(pair in symbol.upper() for pair in ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"])
+            
+            if is_major_fx and contract_size == 100000 and calculated_pip_value < 2.0 and calculated_pip_value > 0.0:
+                # e.g., broker reports tick_value=0.1 -> calculated_pip_value = 1.0
+                # This is 10x too small.
+                print(f"Warning: Broker {symbol} tick_value ({tick_value}) seems 10x too small. Correcting pip value to 10.0")
+                value_per_pip_per_lot = 10.0
+            elif "JPY" in symbol.upper() and contract_size == 100000:
+                # For JPY pairs, pip value is ~8.0-9.0.
+                # If calculated_pip_value is ~0.8-0.9, it's 10x too small.
+                if calculated_pip_value < 2.0 and calculated_pip_value > 0.0:
+                    print(f"Warning: Broker {symbol} tick_value ({tick_value}) seems 10x too small. Correcting pip value.")
+                    value_per_pip_per_lot = calculated_pip_value * 10
+                else:
+                    value_per_pip_per_lot = calculated_pip_value # Trust it
+            
+            elif calculated_pip_value > 0:
+                # For other pairs (indices, metals) or if values seem normal
+                value_per_pip_per_lot = calculated_pip_value
+            
+            if value_per_pip_per_lot == 0: # Fallback if tick_value was 0
+                print(f"Warning: {symbol} has 0 pip value. Using default 10.0")
+                value_per_pip_per_lot = 10.0
+            # --- END NEW LOGIC ---
 
     if value_per_pip_per_lot <= 0:
         print(f"Warning: Invalid pip value ({value_per_pip_per_lot}) for {symbol}. Defaulting size to {min_lot}.")
@@ -530,7 +557,6 @@ def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
          position_size = round(position_size / symbol_info.volume_step) * symbol_info.volume_step
          # Ensure it's still at least min_lot after rounding
          position_size = max(position_size, min_lot)
-
 
     return round(position_size, 2) # Return rounded to 2 decimal places
 
@@ -685,8 +711,8 @@ def _update_trade_outcomes(ignore_magic_number=False):
 
     return summary
 
-# --- Auto-Trading Loop (Modified to use ML prediction potentially) ---
-# (Keep the trading_loop function as previously updated)
+# --- *** MODIFIED: Auto-Trading Loop *** ---
+# (This loop now only scans for NEW trades on symbols with no open positions)
 def trading_loop():
     print("Auto-trading thread started.")
     while STATE.autotrade_running:
@@ -697,7 +723,7 @@ def trading_loop():
             time.sleep(10) # Wait longer if disabled or not connected
             continue
 
-        print(f"[{datetime.now()}] Auto-trader running scan...")
+        print(f"[{datetime.now()}] Auto-trader running scan for NEW trades...")
         symbols_to_trade = settings.get('pairs_to_trade', [])
         if not symbols_to_trade:
              print("Warning: No pairs selected for auto-trading in settings.")
@@ -707,6 +733,16 @@ def trading_loop():
 
         for symbol in symbols_to_trade:
             if not STATE.autotrade_running: break # Check if stopped during loop
+
+            # --- NEW LOGIC TO SKIP ACTIVE SYMBOLS ---
+            open_positions = mt5.positions_get(symbol=symbol)
+            if open_positions is not None and len(open_positions) > 0:
+                # Check if any of these positions are ours
+                bot_positions_on_symbol = [p for p in open_positions if p.magic == 234000]
+                if len(bot_positions_on_symbol) > 0:
+                    print(f"[{datetime.now()}] trading_loop: Skipping {symbol}, already has open positions managed by monitor.")
+                    continue # Skip this symbol, it's handled by the monitoring loop
+            # --- END NEW LOGIC ---
 
             try:
                 # Run multi-TF analysis (which now includes prediction per TF)
@@ -745,22 +781,12 @@ def trading_loop():
                 min_confluence = settings.get('min_confluence', 2)
 
                 if final_action != "Neutral" and confluence_count >= min_confluence:
-                    # --- NEW: Check for existing positions before entering ---
+                    # We already checked for open positions, but we can double check here
                     open_positions = mt5.positions_get(symbol=symbol)
                     if open_positions is not None and len(open_positions) > 0:
-                        has_buy = any(p.type == mt5.ORDER_TYPE_BUY for p in open_positions)
-                        has_sell = any(p.type == mt5.ORDER_TYPE_SELL for p in open_positions)
-
-                        if final_action == "Buy" and has_sell:
-                            print(f"Skipping BUY on {symbol}: An open SELL position exists.")
-                            continue # Skip this trade
-                        if final_action == "Sell" and has_buy:
-                            print(f"Skipping SELL on {symbol}: An open BUY position exists.")
-                            continue # Skip this trade
-
-                        # Optional: Add logic here to limit number of concurrent trades
-                        # For example: if len(open_positions) >= 3: continue
-
+                        print(f"Skipping {final_action} on {symbol}: A position was opened while scanning.")
+                        continue # Skip this trade
+                   
                     # Use the primary timeframe's analysis for execution details
                     primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
                     if primary_tf not in analyses or "error" in analyses[primary_tf]:
@@ -771,34 +797,31 @@ def trading_loop():
                     suggestion = primary_analysis['suggestion']
                     predicted_rate_str = primary_analysis.get('predicted_success_rate', "N/A")
 
-                    # --- Optional: Add ML Prediction Threshold ---
-                    # Example: Only trade if predicted rate is above 55%
-                    # try:
-                    #     rate_num = float(predicted_rate_str.strip('%'))
-                    #     if rate_num < 55:
-                    #         print(f"Skipping {final_action} on {symbol}: Predicted success rate ({predicted_rate_str}) below threshold (55%).")
-                    #         continue
-                    # except (ValueError, TypeError):
-                    #      # If prediction is N/A or invalid, proceed based on TA confidence only
-                    #      pass
-
-
                     # Calculate SL pips and position size
                     if suggestion['entry'] is None or suggestion['sl'] is None:
                          print(f"Skipping {final_action} on {symbol}: Missing entry or SL price in suggestion.")
                          continue
 
-                    # Determine pip multiplier (JPY pairs vs others)
+                    # --- *** NEW ROBUST SL_PIPS LOGIC *** ---
                     symbol_info = mt5.symbol_info(symbol)
-                    pip_multiplier = 10000
-                    if symbol_info:
-                         if symbol_info.digits in (2, 3): # Typically JPY pairs
-                             pip_multiplier = 100
-                         elif symbol_info.digits in (0, 1): # Typically indices/metals without many decimals
-                              pip_multiplier = 1 # Or adjust based on point value if needed
-                    # else: use default 10000
+                    sl_distance = abs(suggestion['entry'] - suggestion['sl'])
+                    pip_size = 0.0001 # Default for 4/5 digit FX
 
-                    sl_pips = abs(suggestion['entry'] - suggestion['sl']) * pip_multiplier
+                    if symbol_info:
+                        if symbol_info.digits in (2, 3): # JPY pairs
+                            pip_size = 0.01
+                        elif symbol_info.digits in (4, 5): # FX pairs
+                            pip_size = 0.0001
+                        else: # Indices, Metals
+                            pip_size = symbol_info.point # Assume 1 point = 1 pip
+                    
+                    if pip_size <= 0:
+                        print(f"Warning: {symbol} has invalid pip_size. Defaulting to 0.0001")
+                        pip_size = 0.0001
+                        
+                    sl_pips = sl_distance / pip_size
+                    # --- *** END NEW LOGIC *** ---
+
 
                     # Use current balance for calculation
                     current_balance = settings['account_balance'] # Start with setting
@@ -861,42 +884,191 @@ def trading_loop():
             if not STATE.autotrade_running: break # Check again after processing a symbol
 
         if STATE.autotrade_running:
-            scan_wait_time = 1800 # 30 mins wait before another scan runs
+            scan_wait_time = 2700 # 45 mins wait before another scan runs
             print(f"Scan complete. Waiting {scan_wait_time} seconds...")
-            time.sleep(scan_wait_time) # Wait a minute before the next full scan
+            time.sleep(scan_wait_time) # Wait 45 minutes
 
     print("Auto-trading thread stopped.")
 
 
+# --- *** MODIFIED: Trade Monitoring Loop *** ---
+# (This loop now manages active trades, closes bad ones, and scales into good ones)
 def trade_monitoring_loop():
-    """Background thread loop for proactive trade management and outcome checking."""
-    print("Trade outcome monitoring thread started.")
+    """
+    Background thread loop for proactive trade management.
+    This loop now also handles scaling-in and closing trades that are against market bias.
+    """
+    print("Trade monitoring thread started.")
     while STATE.monitoring_running:
         if mt5_manager.is_initialized:
-            # --- Proactive Trade Management ---
+            
             open_positions = mt5.positions_get()
-            if open_positions:
-                with STATE.lock:
-                    settings = STATE.settings.copy()
+            if not open_positions:
+                print("Trade Monitor: No open positions found.")
+                time.sleep(60) # Sleep for 60s if no trades, then check again
+                continue
 
-                for position in open_positions:
-                    if position.magic == 234000: # Manage only bot's trades
+            with STATE.lock:
+                settings = STATE.settings.copy()
+
+            # Find all symbols that have bot trades on them
+            bot_positions = [p for p in open_positions if p.magic == 234000]
+            active_symbols = list(set(p.symbol for p in bot_positions)) # Get unique symbols
+
+            if not active_symbols:
+                print("Trade Monitor: No open bot positions found.")
+                time.sleep(60) # Sleep for 60s if no bot trades, then check again
+                continue
+            
+            print(f"[{datetime.now()}] Trade monitor running check for: {active_symbols}")
+
+            for symbol in active_symbols:
+                if not STATE.monitoring_running: break
+
+                try:
+                    # 1. RUN THE FULL ANALYSIS (THIS IS THE API CALL)
+                    analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
+                    if not analyses:
+                        print(f"Trade Monitor: Failed to get analysis for {symbol}")
+                        continue
+
+                    # 2. GET CURRENT MARKET BIAS from the analysis
+                    buys = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Buy')
+                    sells = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Sell')
+                    
+                    current_market_bias = "Neutral"
+                    if buys > sells: current_market_bias = "Buy"
+                    elif sells > buys: current_market_bias = "Sell"
+
+                    # 3. MANAGE/CLOSE EXISTING TRADES FOR THIS SYMBOL
+                    positions_on_symbol = [p for p in bot_positions if p.symbol == symbol]
+                    
+                    # We need a list of positions to iterate over that won't change
+                    # if one gets closed inside the loop
+                    positions_to_check = list(positions_on_symbol) 
+                    
+                    for position in positions_to_check:
+                        # Re-check if position still exists (might have been closed by previous logic)
+                        if mt5.positions_get(ticket=position.ticket) is None:
+                            continue 
+                            
                         symbol_info = mt5.symbol_info(position.symbol)
-                        if not symbol_info:
-                            continue
+                        if not symbol_info: continue
 
+                        # Manage Breakeven and Trailing Stop (no API calls)
                         manage_breakeven(position, settings, symbol_info)
                         manage_trailing_stop(position, settings, symbol_info)
-                        monitor_and_close_trades(position, settings, _run_full_analysis, TRADING_STYLE_TIMEFRAMES)
 
-            # --- Outcome Checking for Closed Trades ---
+                        # Check if trade is against the market bias (proactive close)
+                        if settings.get('proactive_close_enabled', False):
+                            if position.type == 0 and current_market_bias == "Sell": # Open Buy, market is Bearish
+                                print(f"Trade Monitor: Closing {symbol} BUY position {position.ticket}, market bias is now Sell.")
+                                close_trade(position)
+                            elif position.type == 1 and current_market_bias == "Buy": # Open Sell, market is Bullish
+                                print(f"Trade Monitor: Closing {symbol} SELL position {position.ticket}, market bias is now Buy.")
+                                close_trade(position)
+
+                    # 4. LOGIC TO ADD (SCALE-IN) NEW TRADES
+                    
+                    # Re-fetch positions to see what's left after potential closing
+                    remaining_positions = mt5.positions_get(symbol=symbol)
+                    bot_positions_remaining = []
+                    if remaining_positions:
+                        bot_positions_remaining = [p for p in remaining_positions if p.magic == 234000]
+
+                    if not bot_positions_remaining:
+                        print(f"Trade Monitor: All positions on {symbol} were closed. It will be scanned by trading_loop next cycle.")
+                        continue # This symbol is now "free" for the trading_loop
+
+                    # Get the direction of our *first* remaining trade on this symbol
+                    current_trade_direction = "Buy" if bot_positions_remaining[0].type == 0 else "Sell" 
+
+                    if current_market_bias == current_trade_direction:
+                        # Market aligns with our trade, check for a new entry signal
+                        print(f"Trade Monitor: Market bias ({current_market_bias}) aligns for {symbol}. Checking for scale-in.")
+                        
+                        # Use the same confluence logic from trading_loop
+                        confluence_count = buys if current_market_bias == "Buy" else sells
+                        min_confluence = settings.get('min_confluence', 2)
+
+                        if confluence_count >= min_confluence:
+                            # --- This is the "execute trade" logic from trading_loop ---
+                            primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
+                            if primary_tf not in analyses or "error" in analyses[primary_tf]:
+                                print(f"Trade Monitor: Primary TF {primary_tf} analysis failed. Cannot scale-in.")
+                                continue
+
+                            primary_analysis = analyses[primary_tf]
+                            suggestion = primary_analysis['suggestion']
+                            
+                            if not suggestion or suggestion.get('entry') is None or suggestion.get('sl') is None:
+                                print(f"Trade Monitor: No valid entry/SL in suggestion. Cannot scale-in.")
+                                continue
+
+                            # (Optional check: prevent opening a new trade too close to an old one)
+                            # ... (add logic here if you want) ...
+
+                            # --- *** NEW ROBUST SL_PIPS LOGIC *** ---
+                            symbol_info = mt5.symbol_info(symbol)
+                            sl_distance = abs(suggestion['entry'] - suggestion['sl'])
+                            pip_size = 0.0001 # Default for 4/5 digit FX
+
+                            if symbol_info:
+                                if symbol_info.digits in (2, 3): # JPY pairs
+                                    pip_size = 0.01
+                                elif symbol_info.digits in (4, 5): # FX pairs
+                                    pip_size = 0.0001
+                                else: # Indices, Metals
+                                    pip_size = symbol_info.point # Assume 1 point = 1 pip
+                            
+                            if pip_size <= 0:
+                                print(f"Warning: {symbol} has invalid pip_size. Defaulting to 0.0001")
+                                pip_size = 0.0001
+                                
+                            sl_pips = sl_distance / pip_size
+                            # --- *** END NEW LOGIC *** ---
+                            
+                            current_balance = settings['account_balance']
+                            account_info = mt5.account_info()
+                            if account_info:
+                                current_balance = account_info.balance
+
+                            pos_size = _calculate_position_size(current_balance, settings['risk_per_trade'], sl_pips, symbol)
+
+                            if pos_size >= 0.01:
+                                trade_params = {
+                                    "symbol": symbol, "trade_type": current_market_bias,
+                                    "lot_size": pos_size, "sl": suggestion['sl'],
+                                    "tp": suggestion['tp'], "analysis": primary_analysis
+                                }
+                                
+                                try:
+                                    result = _execute_trade_logic(settings['mt5_credentials'], trade_params)
+                                    msg = f"Trade Monitor: SCALED-IN on {symbol}. Order {result.order}."
+                                    socketio.emit('notification', {"message": msg})
+                                    print(msg)
+                                except Exception as exec_e:
+                                    print(f"Trade Monitor: Scale-in execution failed for {symbol}: {exec_e}")
+                            # --- End of execute trade logic ---
+
+                except Exception as e:
+                    print(f"Error in trade monitoring loop for {symbol}: {e}")
+                    traceback.print_exc()
+
+                if not STATE.monitoring_running: break
+            
+            # --- *** BUG FIX: Moved this *OUTSIDE* the for-loop *** ---
+            # This updates the local DB for the ML model
             _update_trade_outcomes()
+
         else:
             print("Trade Monitor: MT5 not connected, skipping check.")
 
-        monitor_wait_time = 1800 # 30 minutes
-        # Wait for 30 minutes (1800 seconds) for more responsive management
+        # Wait for 45 minutes
+        monitor_wait_time = 2700 # 45 minutes
+        print(f"Trade monitor check complete. Waiting {monitor_wait_time} seconds...")
         time.sleep(monitor_wait_time)
+        
     print("Trade outcome monitoring thread stopped.")
 
 
