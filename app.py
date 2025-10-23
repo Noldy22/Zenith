@@ -861,8 +861,9 @@ def trading_loop():
             if not STATE.autotrade_running: break # Check again after processing a symbol
 
         if STATE.autotrade_running:
-            print(f"Scan complete. Waiting {60} seconds...")
-            time.sleep(60) # Wait a minute before the next full scan
+            scan_wait_time = 1800 # 30 mins wait before another scan runs
+            print(f"Scan complete. Waiting {scan_wait_time} seconds...")
+            time.sleep(scan_wait_time) # Wait a minute before the next full scan
 
     print("Auto-trading thread stopped.")
 
