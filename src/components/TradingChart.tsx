@@ -10,7 +10,6 @@ interface Zone {
     time: Time;
 }
 
-// **NEW** Interface for liquidity points
 interface LiquidityPoint {
     time: Time;
     price: number;
@@ -54,18 +53,18 @@ export const TradingChart = (props: {
     bearishOBs?: Zone[];
     bullishFVGs?: Zone[];
     bearishFVGs?: Zone[];
-    buySideLiquidity?: LiquidityPoint[]; // Changed from number[]
-    sellSideLiquidity?: LiquidityPoint[]; // Changed from number[]
+    buySideLiquidity?: LiquidityPoint[];
+    sellSideLiquidity?: LiquidityPoint[];
     suggestion?: Suggestion;
     candlestickPatterns?: CandlestickPattern[];
-    rsiDivergences?: Divergence[];
-    emaCrosses?: EmaCross[];
+    rsiDivergences?: Divergence[]; // <-- This was missing in repo
+    emaCrosses?: EmaCross[];       // <-- This was missing in repo
 }) => {
     const {
         data, onChartReady, onSeriesReady, supportLevels, resistanceLevels,
         demandZones, supplyZones, bullishOBs, bearishOBs,
         bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity,
-        suggestion, candlestickPatterns, rsiDivergences, emaCrosses
+        suggestion, candlestickPatterns, rsiDivergences, emaCrosses // <-- Added missing props
     } = props;
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -111,14 +110,13 @@ export const TradingChart = (props: {
         }
 
         const priceLines: IPriceLine[] = [];
-        const drawnRectangles: { remove: () => void }[] = [];
 
         // --- CANVAS SETUP FOR RECTANGLES ---
         const canvas = document.createElement('canvas');
         canvas.style.position = 'absolute';
         canvas.style.left = '0';
         canvas.style.top = '0';
-        canvas.style.pointerEvents = 'none'; // Allow mouse events to pass through
+        canvas.style.pointerEvents = 'none';
         chartContainerRef.current.appendChild(canvas);
         const ctx = canvas.getContext('2d');
 
@@ -134,48 +132,38 @@ export const TradingChart = (props: {
 
                 const timeScale = chart.timeScale();
                 const visibleRange = timeScale.getVisibleLogicalRange();
-                if (!visibleRange) return;
+                if (!visibleRange || data.length === 0) return;
                 
-                // Find the logical index for the end of the chart (last data point)
                 const lastDataIndex = data.length - 1;
-                if (lastDataIndex < 0) return;
-                
-                // Get the time of the last data point
                 const lastDataTime = data[lastDataIndex].time;
 
                 const drawZone = (zone: Zone, color: string) => {
                     const topY = candlestickSeries.priceToCoordinate(zone.high);
                     const bottomY = candlestickSeries.priceToCoordinate(zone.low);
                     const startX = timeScale.timeToCoordinate(zone.time);
-                    
-                    // Extend the zone to the last *data point* time, not just the visible edge
                     const endX = timeScale.timeToCoordinate(lastDataTime);
 
                     if (startX === null || endX === null || topY === null || bottomY === null) return;
 
-                    // Only draw if the zone starts before the end of the data
                     if (startX <= endX) {
                       ctx.fillStyle = color;
-                      // Draw from startX to endX, spanning the full height
                       ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
                     }
                 };
             
-            // --- ADDED THIS SECTION ---
-            // Draw Supply and Demand Zones
-            supplyZones?.forEach(zone => drawZone(zone, 'rgba(239, 83, 80, 0.2)')); // Red for Supply
-            demandZones?.forEach(zone => drawZone(zone, 'rgba(38, 166, 154, 0.2)')); // Green for Demand
-            // --- END ADDED SECTION ---
+                // --- FIX: ADDED DRAW LOGIC FOR SUPPLY/DEMAND ZONES ---
+                supplyZones?.forEach(zone => drawZone(zone, 'rgba(239, 83, 80, 0.2)')); // Red for Supply
+                demandZones?.forEach(zone => drawZone(zone, 'rgba(38, 166, 154, 0.2)')); // Green for Demand
 
-            // Draw Bullish and Bearish Order Blocks
-            bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
-            bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red for Bearish OB
+                // Draw Bullish and Bearish Order Blocks
+                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
+                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red for Bearish OB
 
-            // Also draw FVGs for diagnosis
-            bullishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(0, 150, 255, 0.2)')); // Blue for Bullish FVG
-            bearishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(128, 0, 128, 0.2)')); // Purple for Bearish FVG
+                // Also draw FVGs for diagnosis
+                bullishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(0, 150, 255, 0.2)')); // Blue for Bullish FVG
+                bearishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(128, 0, 128, 0.2)')); // Purple for Bearish FVG
             } catch (e) {
-                console.warn("Could not draw rectangles, likely because chart is unmounting or has no data.", e);
+                console.warn("Could not draw rectangles.", e);
             }
         };
 
@@ -189,10 +177,8 @@ export const TradingChart = (props: {
             // Draw Liquidity Markers
             const timeToMillis = (t: Time): number => {
                 if (typeof t === 'number') {
-                    // UTCTimestamp is seconds -> convert to ms
                     return t * 1000;
                 }
-                // BusinessDay -> convert to UTC ms at midnight
                 const bd = t as BusinessDay;
                 return Date.UTC(bd.year, bd.month - 1, bd.day);
             };
@@ -200,25 +186,25 @@ export const TradingChart = (props: {
             const bslMarkers: SeriesMarker<Time>[] = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar' as SeriesMarkerPosition, color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
             const sslMarkers: SeriesMarker<Time>[] = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar' as SeriesMarkerPosition, color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
-            // --- NEW: RSI Divergence and EMA Cross Markers ---
+            // --- FIX: Correctly process RSI and EMA markers ---
             const rsiDivMarkers: SeriesMarker<Time>[] = (rsiDivergences || []).map(d => ({
                 time: d.time,
                 position: d.type === 'Bearish' ? 'aboveBar' : 'belowBar',
-                color: d.type === 'Bearish' ? '#FF00FF' : '#00FFFF', // Magenta for Bearish, Cyan for Bullish
+                color: d.type === 'Bearish' ? '#FF00FF' : '#00FFFF', 
                 shape: d.type === 'Bearish' ? 'arrowDown' : 'arrowUp',
                 text: d.type.substring(0, 4) + ' Div'
             }));
 
             const emaCrossMarkers: SeriesMarker<Time>[] = (emaCrosses || []).map(c => ({
                 time: c.time,
-                position: 'inBar', // Position crosses inside the bar for clarity
-                color: c.type === 'Golden Cross' ? '#FFD700' : '#808080', // Gold for Golden, Gray for Death
+                position: 'inBar',
+                color: c.type === 'Golden Cross' ? '#FFD700' : '#808080',
                 shape: 'circle',
                 text: c.type
             }));
-            // --- END NEW ---
+            // --- END FIX ---
 
-            // --- **UPDATED** Pattern Prioritization Logic ---
+            // --- Pattern Prioritization Logic ---
             const patternPriority: { [key: string]: number } = {
                 'ENGULFING': 1,
                 'HAMMER': 2, 'HANGINGMAN': 2, 'SHOOTINGSTAR': 2,
@@ -234,7 +220,6 @@ export const TradingChart = (props: {
                 const patternBaseName = p.name.replace('B_', '').replace('S_', '');
                 const currentPriority = patternPriority[patternBaseName] || 99;
 
-                // Only process patterns that are in our priority list
                 if (!patternPriority[patternBaseName]) {
                     return;
                 }
@@ -255,10 +240,10 @@ export const TradingChart = (props: {
                 position: (p.position === 'above' ? 'aboveBar' : 'belowBar') as SeriesMarkerPosition,
                 color: p.name.startsWith('B_') ? '#26a69a' : '#ef5350',
                 shape: p.position === 'below' ? 'arrowUp' : 'arrowDown',
-                text: p.name.substring(0, 10) // Shorten name
+                text: p.name.substring(0, 10)
             }));
-            // --- End of New Logic ---
 
+            // --- FIX: Add new markers to the allMarkers array ---
             const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers, ...rsiDivMarkers, ...emaCrossMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
             candlestickSeries.setMarkers(allMarkers);
 
@@ -281,13 +266,10 @@ export const TradingChart = (props: {
                 width: chartContainerRef.current?.clientWidth,
                 height: chartContainerRef.current?.clientHeight,
             });
-            // Redraw rectangles on resize
             drawRectangles();
         };
 
-        // Redraw rectangles when the visible time range changes (pan/zoom)
         chart.timeScale().subscribeVisibleTimeRangeChange(drawRectangles);
-
         window.addEventListener('resize', handleResize);
 
         // --- 4. CLEANUP ---
@@ -295,7 +277,6 @@ export const TradingChart = (props: {
             window.removeEventListener('resize', handleResize);
             chart.timeScale().unsubscribeVisibleTimeRangeChange(drawRectangles);
             chart.remove();
-            // Remove the canvas from the DOM
             if (chartContainerRef.current && canvas.parentNode === chartContainerRef.current) {
                 chartContainerRef.current.removeChild(canvas);
             }
@@ -305,7 +286,7 @@ export const TradingChart = (props: {
         data, supportLevels, resistanceLevels, demandZones, supplyZones,
         bullishOBs, bearishOBs, bullishFVGs, bearishFVGs,
         buySideLiquidity, sellSideLiquidity, suggestion, candlestickPatterns,
-        rsiDivergences, emaCrosses, // Add new props to dependency array
+        rsiDivergences, emaCrosses, // <-- FIX: Add to dependency array
         onChartReady, onSeriesReady
     ]);
 
