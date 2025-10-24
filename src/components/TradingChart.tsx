@@ -1,6 +1,6 @@
 "use client";
 
-import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay, SeriesMarker, SeriesMarkerPosition } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay, SeriesMarker, SeriesMarkerPosition, LogicalRange } from 'lightweight-charts';
 import React, { useEffect, useRef } from 'react';
 import { CandlestickData } from '@/lib/alphaVantage';
 
@@ -99,7 +99,18 @@ export const TradingChart = (props: {
         // --- 2. DATA & VISUALS ---
         if (data.length > 0) {
             candlestickSeries.setData(data);
-            chart.timeScale().fitContent();
+
+            // --- FIXED: Set a comfortable default zoom ---
+            // Instead of chart.timeScale().fitContent(), we set a logical range
+            // to show the last 100 bars, which is much more readable.
+            const lastBarIndex = data.length - 1;
+            const firstVisibleIndex = Math.max(0, lastBarIndex - 100); 
+            
+            chart.timeScale().setVisibleLogicalRange({
+                from: firstVisibleIndex,
+                to: lastBarIndex
+            });
+            // --- END FIX ---
         }
 
         const priceLines: IPriceLine[] = [];
@@ -125,20 +136,35 @@ export const TradingChart = (props: {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
                 const timeScale = chart.timeScale();
-                const lastVisibleTime = timeScale.getVisibleRange()?.to;
+                const visibleRange = timeScale.getVisibleLogicalRange();
+                if (!visibleRange) return;
+
+                const lastVisibleTime = visibleRange.to;
                 if (!lastVisibleTime) return;
+                
+                // Find the logical index for the end of the chart (last data point)
+                const lastDataIndex = data.length - 1;
+                if (lastDataIndex < 0) return;
+                
+                // Get the time of the last data point
+                const lastDataTime = data[lastDataIndex].time;
 
                 const drawZone = (zone: Zone, color: string) => {
-                    // Defensively check priceToCoordinate as well, as it can be null if price is out of view
                     const topY = candlestickSeries.priceToCoordinate(zone.high);
                     const bottomY = candlestickSeries.priceToCoordinate(zone.low);
                     const startX = timeScale.timeToCoordinate(zone.time);
-                    const endX = timeScale.timeToCoordinate(lastVisibleTime);
+                    
+                    // Extend the zone to the last *data point* time, not just the visible edge
+                    const endX = timeScale.timeToCoordinate(lastDataTime);
 
                     if (startX === null || endX === null || topY === null || bottomY === null) return;
 
-                    ctx.fillStyle = color;
-                    ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+                    // Only draw if the zone starts before the end of the data
+                    if (startX <= endX) {
+                      ctx.fillStyle = color;
+                      // Draw from startX to endX, spanning the full height
+                      ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+                    }
                 };
 
             // Draw Bullish and Bearish Order Blocks

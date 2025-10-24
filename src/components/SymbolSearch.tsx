@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Input } from '@/components/ui/input'; // Import Shadcn Input
+import { Label } from '@/components/ui/label'; // Import Shadcn Label
 
 interface SymbolSearchProps {
   symbols: string[];
@@ -42,10 +44,16 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
     setIsOpen(false);
   };
 
+  // Update searchTerm when initialSymbol changes (e.g., on connection)
+  useEffect(() => {
+    setSearchTerm(initialSymbol);
+  }, [initialSymbol]);
+
   return (
-    <div className="relative" ref={wrapperRef}>
-      <label className="text-sm font-bold text-gray-400 mb-1 block">Instrument</label>
-      <input
+    <div className="relative w-full" ref={wrapperRef}>
+      <Label htmlFor="symbol-search" className="text-sm font-bold text-gray-400 mb-1 block">Instrument</Label>
+      <Input
+        id="symbol-search"
         type="text"
         value={searchTerm}
         onChange={(e) => {
@@ -54,7 +62,7 @@ export default function SymbolSearch({ symbols, onSymbolSelect, initialSymbol }:
         }}
         onFocus={() => setIsOpen(true)}
         placeholder="Search symbol..."
-        className="w-full bg-secondary border border-border rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary"
+        className="w-full bg-secondary" // Use secondary for a slightly darker input
       />
       {isOpen && filteredSymbols.length > 0 && (
         <ul className="absolute z-10 w-full mt-1 bg-secondary border border-border rounded-md max-h-60 overflow-y-auto shadow-lg">

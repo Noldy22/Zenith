@@ -3,24 +3,44 @@ import { useAnalysis } from '@/hooks/useAnalysis';
 import { TradingChart } from "@/components/TradingChart";
 import CandleHighlightAnimation from "@/components/CandleHighlightAnimation";
 import SymbolSearch from "@/components/SymbolSearch";
-import Chat from "@/components/Chat"; // Import the new Chat component
+import Chat from "@/components/Chat";
 import { CandlestickData } from "@/lib/alphaVantage";
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { ISeriesApi, Time, IChartApi } from "lightweight-charts";
 import { useAlert } from '@/context/AlertContext';
 import { io, Socket } from "socket.io-client";
-const getBackendUrl = () => {
-    if (typeof window !== 'undefined') {
-        return `http://${window.location.hostname}:5000`;
-    }
-    return 'http://127.0.0.1:5000'; // Default for server-side rendering
-};
 import { timeframes, AnalysisResult } from '@/lib/types';
+import { getBackendUrl } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogClose,
+} from "@/components/ui/dialog"
+import { BarChart2, Bot, Power, PowerOff, X } from 'lucide-react';
+
 const brokerPaths = {
   'Exness': 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
   'MetaQuotes': 'C:\\Program Files\\MetaTrader 5\\terminal64.exe',
   'Custom': ''
 };
+
 export default function ChartsPage() {
   const { showAlert } = useAlert();
   
@@ -34,21 +54,24 @@ export default function ChartsPage() {
   const [series, setSeries] = useState<ISeriesApi<'Candlestick'> | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const socketRef = useRef<Socket | null>(null);
+
   // UI State
-  const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
-  const timeframeDropdownRef = useRef<HTMLDivElement>(null);
   const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const { isAnalyzing, analysisResult, analysisProgress, performAnalysis, clearAnalysis, setAnalysisProgress } = useAnalysis();
+  
+  // Trade State
   const [lotSize, setLotSize] = useState('0.01');
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
+  
   // Auto-Trading State
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
   const [autoTradeLotSize, setAutoTradeLotSize] = useState('0.01');
   const [confidenceThreshold, setConfidenceThreshold] = useState('75');
+  
   // MT5 Connection State
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -57,6 +80,8 @@ export default function ChartsPage() {
   const [mt5Server, setMt5Server] = useState('');
   const [mt5TerminalPath, setMt5TerminalPath] = useState(brokerPaths['Exness']);
   const [brokerSelection, setBrokerSelection] = useState<keyof typeof brokerPaths>('Exness');
+
+  // --- DATA FETCHING & SOCKETS ---
   const fetchChartData = useCallback(() => {
     setIsLoading(true);
     clearAnalysis();
@@ -67,39 +92,27 @@ export default function ChartsPage() {
     }
     const credentials = JSON.parse(storedCreds);
     const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
+
     fetch(`${getBackendUrl()}/api/get_chart_data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
     })
     .then(res => {
-        if (!res.ok) {
-            // If response is not OK, get the error body and reject
-            return res.json().then(err => Promise.reject(err));
-        }
-        // If response is OK, clone it so we can log it and still use it
-        const clonedRes = res.clone();
-        clonedRes.json().then(data => {
-            console.log("--- [FRONTEND LOG] Raw data received from /api/get_chart_data ---");
-            console.log(`Received ${data.length} items.`);
-            console.log("Sample of received data:", data.slice(0, 5));
-            console.log("---------------------------------------------------------------");
-        });
+        if (!res.ok) { return res.json().then(err => Promise.reject(err)); }
         return res.json();
     })
     .then(data => { setChartData(data); })
     .catch(error => {
-      console.error("--- [FRONTEND LOG] Error fetching chart data ---");
-      console.error(error);
-      console.log("-----------------------------------------------");
+      console.error("Error fetching chart data:", error);
       showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
     .finally(() => setIsLoading(false));
-  }, [activeSymbol, activeTimeframe, showAlert]);
+  }, [activeSymbol, activeTimeframe, showAlert, clearAnalysis]);
+
   useEffect(() => {
     const checkConnection = async () => {
-        // Use the definitive credentials from localStorage, not server settings
         const storedCreds = localStorage.getItem('mt5_credentials');
         if (storedCreds) {
             try {
@@ -108,72 +121,34 @@ export default function ChartsPage() {
                 setMt5Password(credentials.password);
                 setMt5Server(credentials.server);
                 setMt5TerminalPath(credentials.terminal_path);
-                // Attempt to connect and get symbols using the correct credentials
+                
                 const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(credentials)
                 });
+
                 if (symbolsResponse.ok) {
                     const newSymbols = await symbolsResponse.json();
                     setSymbols(newSymbols);
-                    setIsConnected(true); // SUCCESS: Connection confirmed
+                    setIsConnected(true);
                 } else {
-                    // This is a likely failure point if creds are bad
                     setIsConnected(false);
-                    console.error("Initial connection check failed, server might be down or credentials invalid.");
+                    console.error("Initial connection check failed.");
                 }
             } catch (error) {
                 console.error("Error during initial connection check:", error);
                 setIsConnected(false);
             }
         } else {
-            // No credentials stored, so definitely not connected.
             setIsConnected(false);
         }
     };
     checkConnection();
   }, []);
+
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);
   
-  useEffect(() => {
-    if (isConnected) {
-        socketRef.current = io(getBackendUrl());
-        socketRef.current.on('connect', () => {
-            console.log('Socket connected!');
-            const storedCreds = localStorage.getItem('mt5_credentials');
-            if (storedCreds) {
-                socketRef.current?.emit('subscribe_to_chart', {
-                    symbol: activeSymbol,
-                    timeframe: timeframes[activeTimeframe as keyof typeof timeframes],
-                    credentials: JSON.parse(storedCreds)
-                });
-            }
-        });
-        socketRef.current.on('new_bar', (bar: CandlestickData) => { if (seriesRef.current) { seriesRef.current.update(bar); } });
-        socketRef.current.on('training_complete', (data) => { showAlert(data.message, 'success'); });
-        return () => { socketRef.current?.disconnect(); };
-    }
-  }, [isConnected, activeSymbol, activeTimeframe, showAlert]);
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (timeframeDropdownRef.current && !timeframeDropdownRef.current.contains(event.target as Node)) {
-        setIsTimeframeOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-  useEffect(() => {
-    const suggestion = analysisResult?.suggestion;
-    if (suggestion && suggestion.action !== 'Neutral') {
-        setStopLoss(suggestion.sl?.toFixed(5) || '');
-        setTakeProfit(suggestion.tp?.toFixed(5) || '');
-    } else {
-        setStopLoss('');
-        setTakeProfit('');
-    }
-  }, [analysisResult]);
   useEffect(() => {
     if (isConnected) {
         socketRef.current = io(getBackendUrl());
@@ -189,14 +164,11 @@ export default function ChartsPage() {
             }
         });
         socketRef.current.on('new_bar', (bar: CandlestickData) => {
-            if (seriesRef.current) {
-                seriesRef.current.update(bar);
-            }
+            if (seriesRef.current) { seriesRef.current.update(bar); }
         });
         socketRef.current.on('training_complete', (data) => {
             showAlert(data.message, 'success');
         });
-        // New listener for analysis progress
         socketRef.current.on('analysis_progress', (data) => {
             setAnalysisProgress(data.message);
         });
@@ -204,18 +176,34 @@ export default function ChartsPage() {
             socketRef.current?.disconnect();
         };
     }
-}, [isConnected, activeSymbol, activeTimeframe, showAlert]);
+}, [isConnected, activeSymbol, activeTimeframe, showAlert, setAnalysisProgress]);
+
+  useEffect(() => {
+    const suggestion = analysisResult?.suggestion;
+    if (suggestion && suggestion.action !== 'Neutral') {
+        setStopLoss(suggestion.sl?.toFixed(5) || '');
+        setTakeProfit(suggestion.tp?.toFixed(5) || '');
+    } else {
+        setStopLoss('');
+        setTakeProfit('');
+    }
+  }, [analysisResult]);
+
+  // --- CHART CALLBACKS ---
   const handleChartReady = useCallback((chart: IChartApi) => { setChart(chart) }, []);
   const handleSeriesReady = useCallback((series: ISeriesApi<"Candlestick">) => {
     setSeries(series);
     seriesRef.current = series;
    }, []);
+
+  // --- MODAL & BUTTON HANDLERS ---
   const handleBrokerSelection = (broker: keyof typeof brokerPaths) => {
     setBrokerSelection(broker);
     if (broker !== 'Custom') {
       setMt5TerminalPath(brokerPaths[broker]);
     }
   };
+
   const handleConnect = async () => {
     setIsConnecting(true);
     const credentials = {
@@ -243,7 +231,7 @@ export default function ChartsPage() {
             const defaultSymbol = newSymbols.find(s => s.toUpperCase() === 'EURUSD') || newSymbols[0];
             if (defaultSymbol) {
                 setActiveSymbol(defaultSymbol);
-                showAlert(`Symbol ${activeSymbol} not found on this server. Switched to default: ${defaultSymbol}`, 'info');
+                showAlert(`Symbol ${activeSymbol} not found. Switched to ${defaultSymbol}`, 'info');
             }
         }
     } catch (error: any) {
@@ -252,6 +240,7 @@ export default function ChartsPage() {
         setIsConnecting(false);
     }
   };
+
   const handleDisconnect = () => {
     localStorage.removeItem('mt5_credentials');
     setIsConnected(false);
@@ -260,9 +249,11 @@ export default function ChartsPage() {
     clearAnalysis();
     showAlert('Disconnected from MT5.', 'info');
   };
+
   const handleAnalysis = () => {
     performAnalysis(activeSymbol, activeTimeframe as keyof typeof timeframes);
   };
+
   const handleManualTrade = async (tradeType: 'BUY' | 'SELL') => {
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) { showAlert('You are not connected to MT5.', 'error'); return; }
@@ -312,117 +303,159 @@ export default function ChartsPage() {
         showAlert(`Error: ${error.message}`, 'error');
     } finally { setIsTogglingAutoTrade(false); }
   };
+
   return (
-    <main className="p-4">
-      {isConnectModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-          <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
-            <h3 className="font-bold text-2xl text-white mb-6 text-center">Connect MT5 Account</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-400">Login ID</label>
-                <input type="text" value={mt5Login} onChange={(e) => setMt5Login(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
+    <main className="p-4 sm:p-6 lg:p-8">
+      {/* --- Connect Modal --- */}
+      <Dialog open={isConnectModalOpen} onOpenChange={setIsConnectModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Connect MT5 Account</DialogTitle>
+            <DialogDescription>
+              Enter your credentials to connect to your MetaTrader 5 account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="mt5-login">Login ID</Label>
+              <Input id="mt5-login" value={mt5Login} onChange={(e) => setMt5Login(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mt5-password">Password</Label>
+              <Input id="mt5-password" type="password" value={mt5Password} onChange={(e) => setMt5Password(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mt5-server">Server</Label>
+              <Input id="mt5-server" value={mt5Server} onChange={(e) => setMt5Server(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mt5-broker">Broker</Label>
+              <Select onValueChange={(value) => handleBrokerSelection(value as keyof typeof brokerPaths)} value={brokerSelection}>
+                <SelectTrigger id="mt5-broker">
+                  <SelectValue placeholder="Select broker..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(brokerPaths).map(broker => <SelectItem key={broker} value={broker}>{broker}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {brokerSelection === 'Custom' && (
+              <div className="space-y-2">
+                <Label htmlFor="mt5-path">Terminal Path</Label>
+                <Input id="mt5-path" value={mt5TerminalPath} onChange={(e) => setMt5TerminalPath(e.target.value)} placeholder="C:\Program Files\...\terminal64.exe" />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-400">Password</label>
-                <input type="password" value={mt5Password} onChange={(e) => setMt5Password(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-400">Server</label>
-                <input type="text" value={mt5Server} onChange={(e) => setMt5Server(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-400">Broker</label>
-                <select onChange={(e) => handleBrokerSelection(e.target.value as keyof typeof brokerPaths)} value={brokerSelection} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary">
-                    {Object.keys(brokerPaths).map(broker => <option key={broker} value={broker}>{broker}</option>)}
-                </select>
-              </div>
-              {brokerSelection === 'Custom' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-400">Terminal Path</label>
-                  <input type="text" value={mt5TerminalPath} onChange={(e) => setMt5TerminalPath(e.target.value)} placeholder="C:\Program Files\...\terminal64.exe" className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-                </div>
-              )}
-              <button onClick={handleConnect} disabled={isConnecting} className="w-full px-4 py-3 bg-primary hover:bg-yellow-600 rounded-lg text-background font-bold text-lg transition-colors disabled:opacity-50">
-                {isConnecting ? 'Connecting...' : 'Connect'}
-              </button>
-              <button onClick={() => setIsConnectModalOpen(false)} className="w-full mt-2 px-4 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg text-white font-bold transition-colors">
+            )}
+          </div>
+          <DialogFooter className="sm:flex-col sm:space-x-0 sm:space-y-2">
+            <Button onClick={handleConnect} disabled={isConnecting} className="w-full">
+              {isConnecting ? 'Connecting...' : 'Connect'}
+            </Button>
+            <DialogClose asChild>
+              <Button type="button" variant="secondary" className="w-full">
                 Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {isAutoTradeModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-          <div className="bg-secondary p-8 rounded-xl shadow-2xl w-full max-w-md">
-            <h3 className="font-bold text-2xl text-white mb-6">Auto-Trade Settings</h3>
-            <div className="space-y-4">
-                <div>
-                    <label className="block text-sm font-medium text-gray-400">Lot Size</label>
-                    <input type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50" />
-                </div>
-                <div>
-                    <label className="block text-sm font-medium text-gray-400">Min. Confidence (%)</label>
-                    <input type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50" />
-                </div>
-                <button onClick={handleToggleAutoTrade} disabled={isTogglingAutoTrade || isLoading} className={`w-full px-4 py-3 rounded-lg text-background font-bold text-lg transition-colors disabled:opacity-50 ${isAutoTrading ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}>
-                    {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? `STOP AUTO-TRADING (${activeSymbol})` : 'START AUTO-TRADING')}
-                </button>
-                 <button onClick={() => setIsAutoTradeModalOpen(false)} className="w-full mt-2 px-4 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg text-white font-bold transition-colors">
-                    Cancel
-                </button>
-            </div>
-          </div>
-        </div>
-      )}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="md:col-span-2">
-          <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
-            <div className="w-full sm:w-auto">
-              <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2 bg-secondary p-1 rounded-md">
-                 <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                 <span className="text-xs font-semibold">{isConnected ? 'Connected' : 'Disconnected'}</span>
+              </Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Auto-Trade Modal --- */}
+      <Dialog open={isAutoTradeModalOpen} onOpenChange={setIsAutoTradeModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Auto-Trade Settings</DialogTitle>
+            <DialogDescription>
+              Configure and activate automated trading for {activeSymbol}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                  <Label htmlFor="auto-lot-size">Lot Size</Label>
+                  <Input id="auto-lot-size" type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} />
               </div>
-              {isConnected ? (
-                 <button onClick={handleDisconnect} className="px-3 py-2 text-xs rounded-md bg-red-600 text-white hover:bg-red-700">Disconnect</button>
-              ) : (
-                 <button onClick={() => setIsConnectModalOpen(true)} className="px-3 py-2 text-xs rounded-md bg-blue-600 text-white hover:bg-blue-700">Connect MT5</button>
-              )}
-              <div className="relative" ref={timeframeDropdownRef}>
-                <button onClick={() => setIsTimeframeOpen(!isTimeframeOpen)} className="px-4 py-2 text-sm rounded-md bg-secondary text-white w-24 hover:bg-gray-700">
-                  {activeTimeframe}
-                </button>
-                {isTimeframeOpen && (
-                  <div className="absolute top-full right-0 mt-1 w-24 bg-secondary border border-border rounded-md shadow-lg z-20">
-                    {Object.keys(timeframes).map((tfKey) => (
-                      <button key={tfKey} onClick={() => { setActiveTimeframe(tfKey); setIsTimeframeOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-600">
-                        {tfKey}
-                      </button>
-                    ))}
+              <div className="space-y-2">
+                  <Label htmlFor="auto-confidence">Min. Confidence (%)</Label>
+                  <Input id="auto-confidence" type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} />
+              </div>
+          </div>
+          <DialogFooter className="sm:flex-col sm:space-x-0 sm:space-y-2">
+              <Button 
+                onClick={handleToggleAutoTrade} 
+                disabled={isTogglingAutoTrade || isLoading} 
+                className={`w-full ${isAutoTrading ? 'bg-destructive hover:bg-destructive/90' : 'bg-green-600 hover:bg-green-700'} text-white`}
+              >
+                  {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? `STOP AUTO-TRADING` : 'START AUTO-TRADING')}
+              </Button>
+              <DialogClose asChild>
+                <Button type="button" variant="secondary" className="w-full">
+                  Cancel
+                </Button>
+              </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Main Page Content --- */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        
+        {/* --- Left Column (Chart & Chat) --- */}
+        <div className="lg:col-span-2 space-y-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="w-full md:w-auto md:min-w-[200px]">
+                  <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
+                </div>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <div className="flex items-center gap-2 bg-secondary p-2 rounded-md">
+                    <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                    <span className="text-xs font-semibold">{isConnected ? 'Connected' : 'Disconnected'}</span>
                   </div>
-                )}
+                  {isConnected ? (
+                    <Button onClick={handleDisconnect} variant="destructive" size="sm">
+                      <PowerOff className="h-4 w-4 mr-1" /> Disconnect
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setIsConnectModalOpen(true)} variant="outline" size="sm">
+                      <Power className="h-4 w-4 mr-1" /> Connect MT5
+                    </Button>
+                  )}
+                  <div className="w-24">
+                    <Select value={activeTimeframe} onValueChange={(value) => setActiveTimeframe(value)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Timeframe" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Object.keys(timeframes).map((tfKey) => (
+                          <SelectItem key={tfKey} value={tfKey}>{tfKey}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button 
+                    onClick={() => setIsAutoTradeModalOpen(true)} 
+                    disabled={!isConnected} 
+                    variant={isAutoTrading ? "default" : "secondary"}
+                    size="sm"
+                    className={isAutoTrading ? 'bg-green-600 hover:bg-green-700 text-white' : ''}
+                  >
+                    <Bot className="h-4 w-4 mr-1" />
+                    {isAutoTrading ? 'Auto-Trading Active' : 'Auto-Trade'}
+                  </Button>
+                </div>
               </div>
-              <button onClick={() => setIsAutoTradeModalOpen(true)} disabled={!isConnected} className={`px-4 py-2 text-sm rounded-md font-semibold ${isAutoTrading ? 'bg-green-500 text-white' : 'bg-secondary text-white hover:bg-gray-700'} disabled:opacity-50 disabled:cursor-not-allowed`}>
-                {isAutoTrading ? 'Auto-Trading Active' : 'Auto-Trade'}
-              </button>
-            </div>
-          </div>
-          <div className="text-center mb-4">
-            <h1 className="text-3xl font-bold">Trading Chart for {activeSymbol}</h1>
-          </div>
-          <div className="relative rounded-md overflow-hidden h-[450px] bg-secondary">
-          <CandleHighlightAnimation
+            </CardContent>
+          </Card>
+
+          <Card className="relative h-[450px]">
+            <CandleHighlightAnimation
               chart={chart}
               series={series}
               isAnalyzing={isAnalyzing}
               candleData={chartData}
             />
             {isLoading ? (
-              <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
+              <div className="flex justify-center items-center h-full"><p className="text-muted-foreground">Loading chart data...</p></div>
             ) : chartData.length > 0 ? (
               <TradingChart
                 data={chartData}
@@ -440,98 +473,117 @@ export default function ChartsPage() {
                 sellSideLiquidity={analysisResult?.sell_side_liquidity}
                 suggestion={analysisResult?.suggestion}
                 candlestickPatterns={analysisResult?.candlestick_patterns}
-                
+                rsiDivergences={analysisResult?.rsi_divergence}
+                emaCrosses={analysisResult?.ema_crosses}
               />
             ) : (
               <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>
             )}
-          </div>
-          {/* New Chat Section */}
-          <div className="mt-4 h-[400px]">
+          </Card>
+          
+          <div className="h-[400px]">
              {analysisResult && <Chat analysisContext={analysisResult} />}
           </div>
         </div>
-        <div className="md:col-span-1 bg-secondary rounded-xl p-4 min-h-[600px] flex flex-col shadow-lg">
-          <h2 className="text-xl font-bold text-white mb-4">Analysis & Controls</h2>
-            <div className="flex gap-2 mb-4">
-                <button onClick={handleAnalysis} disabled={isAnalyzing} className="w-full px-4 py-2 bg-primary hover:bg-yellow-600 rounded-md text-background font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
-                  {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-                </button>
-            </div>
-          <div className="mt-4 flex-grow overflow-y-auto">
-            {isAnalyzing && (
-              <div className="text-center p-4">
-                <p className="text-lg text-yellow-400 font-semibold animate-pulse">{analysisProgress}</p>
-                <p className="text-sm text-gray-500 mt-2">Please wait, AI is at work...</p>
-              </div>
-            )}
-            {analysisResult && !isAnalyzing ? (
-                <div className="space-y-4 text-sm">
-                    {analysisResult.predicted_success_rate && (
-                        <div>
-                            <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
-                            <p className="font-semibold text-lg text-white">{analysisResult.predicted_success_rate}</p>
-                        </div>
-                    )}
-                    <div>
-                        <h3 className="font-bold text-lg text-gray-300">Confidence</h3>
-                        <p className={`font-semibold text-2xl ${
-                            analysisResult.confidence > 75 ? 'text-green-400'
-                            : analysisResult.confidence >= 50 ? 'text-yellow-400'
-                            : 'text-red-400'
-                        }`}>
-                            {analysisResult.confidence.toFixed(0)}%
-                        </p>
-                    </div>
-                    <div>
-                        <h3 className="font-bold text-lg text-yellow-300">Trade Rationale</h3>
-                        <p className="text-gray-300">{analysisResult.suggestion.reason}</p>
-                    </div>
-                    {/* **UPDATED NARRATIVE DISPLAY** */}
-                    <div className="space-y-3">
-                        <h3 className="font-bold text-lg text-blue-300">{analysisResult.narrative.overview}</h3>
-                        <div>
-                            <p className="font-semibold text-gray-200">{analysisResult.narrative.structure_title}</p>
-                            <p className="text-gray-400 italic">{analysisResult.narrative.structure_body}</p>
-                        </div>
-                        <div>
-                            <p className="font-semibold text-gray-200">{analysisResult.narrative.levels_title}</p>
-                            <ul className="list-disc list-inside text-gray-400 italic">
-                                {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
-                            </ul>
-                        </div>
-                    </div>
-                    {analysisResult.suggestion.action !== 'Neutral' && (
-                        <div className="mt-6 border-t border-border pt-4">
-                            <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>
-                            <div className="space-y-3">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-400">Lot Size</label>
-                                    <input type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-400">Stop Loss (Price)</label>
-                                    <input type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-400">Take Profit (Price)</label>
-                                    <input type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" className="w-full mt-1 bg-gray-900 border border-border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary" />
-                                </div>
-                                <div className="flex gap-x-2">
-                                    <button onClick={() => handleManualTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'BUY'}</button>
-                                    <button onClick={() => handleManualTrade('SELL')} disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded text-white font-bold disabled:bg-gray-500 disabled:cursor-not-allowed">{isTrading ? 'Placing...' : 'SELL'}</button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+
+        {/* --- Right Column (Analysis & Controls) --- */}
+        <Card className="md:col-span-1 min-h-[600px] flex flex-col">
+          <CardHeader>
+            <CardTitle className="text-xl">Analysis & Controls</CardTitle>
+          </CardHeader>
+          <CardContent className="flex-grow flex flex-col">
+              <Button onClick={handleAnalysis} disabled={isAnalyzing || !isConnected} className="w-full">
+                <BarChart2 className="h-4 w-4 mr-2" />
+                {isAnalyzing ? 'Analyzing...' : `Analyze ${activeSymbol}`}
+              </Button>
+            
+            <div className="mt-4 flex-grow overflow-y-auto space-y-4">
+              {isAnalyzing && (
+                <div className="text-center p-4">
+                  <p className="text-lg text-primary font-semibold animate-pulse">{analysisProgress}</p>
+                  <p className="text-sm text-muted-foreground mt-2">Please wait, AI is at work...</p>
                 </div>
-            ) : (
-                 <div className="text-center text-gray-500 mt-10">
+              )}
+              {analysisResult && !isAnalyzing ? (
+                  <div className="space-y-4 text-sm">
+                      {analysisResult.predicted_success_rate && (
+                          <div>
+                              <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
+                              <p className="font-semibold text-lg text-foreground">{analysisResult.predicted_success_rate}</p>
+                          </div>
+                      )}
+                      <div>
+                          <h3 className="font-bold text-lg text-gray-300">Confidence</h3>
+                          <p className={`font-semibold text-2xl ${
+                              analysisResult.confidence > 75 ? 'text-green-400'
+                              : analysisResult.confidence >= 50 ? 'text-yellow-400'
+                              : 'text-red-400'
+                          }`}>
+                              {analysisResult.confidence.toFixed(0)}%
+                          </p>
+                      </div>
+                      <div>
+                          <h3 className="font-bold text-lg text-primary">Trade Rationale</h3>
+                          <p className="text-muted-foreground">{analysisResult.suggestion.reason}</p>
+                      </div>
+                      <div className="space-y-3">
+                          <h3 className="font-bold text-lg text-blue-300">{analysisResult.narrative.overview}</h3>
+                          <div>
+                              <p className="font-semibold text-foreground">{analysisResult.narrative.structure_title}</p>
+                              <p className="text-muted-foreground italic">{analysisResult.narrative.structure_body}</p>
+                          </div>
+                          <div>
+                              <p className="font-semibold text-foreground">{analysisResult.narrative.levels_title}</p>
+                              <ul className="list-disc list-inside text-muted-foreground italic">
+                                  {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
+                              </ul>
+                          </div>
+                      </div>
+                      {analysisResult.suggestion.action !== 'Neutral' && (
+                          <div className="mt-6 border-t border-border pt-4">
+                              <h3 className="font-bold text-lg text-foreground mb-2">Manual Trade Execution</h3>
+                              <div className="space-y-3">
+                                  <div className="space-y-2">
+                                      <Label htmlFor="manual-lot">Lot Size</Label>
+                                      <Input id="manual-lot" type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} />
+                                  </div>
+                                  <div className="space-y-2">
+                                      <Label htmlFor="manual-sl">Stop Loss (Price)</Label>
+                                      <Input id="manual-sl" type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" />
+                                  </div>
+                                  <div className="space-y-2">
+                                      <Label htmlFor="manual-tp">Take Profit (Price)</Label>
+                                      <Input id="manual-tp" type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" />
+                                  </div>
+                                  <div className="flex gap-x-2">
+                                      <Button 
+                                        onClick={() => handleManualTrade('BUY')} 
+                                        disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} 
+                                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                                      >
+                                        {isTrading ? 'Placing...' : 'BUY'}
+                                      </Button>
+                                      <Button 
+                                        onClick={() => handleManualTrade('SELL')} 
+                                        disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} 
+                                        className="flex-1"
+                                        variant="destructive"
+                                      >
+                                        {isTrading ? 'Placing...' : 'SELL'}
+                                      </Button>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+              ) : (
+                  <div className="text-center text-muted-foreground mt-10">
                     <p>{isConnected ? 'Click "Analyze" to get AI insights.' : 'Connect your MT5 account to begin.'}</p>
                 </div>
-            )}
-          </div>
-        </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </main>
   );

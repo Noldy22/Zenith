@@ -2,6 +2,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Send } from 'lucide-react';
 
 interface Message {
   role: 'user' | 'model';
@@ -69,38 +73,42 @@ export default function Chat({ analysisContext }: ChatProps) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-800 rounded-lg p-4">
-      <h3 className="text-xl font-bold text-white mb-4">Chat with Zenith AI</h3>
-      <div className="flex-grow overflow-y-auto mb-4 space-y-4 pr-2">
+    <Card className="flex flex-col h-full">
+      <CardHeader>
+        <CardTitle>Chat with Zenith AI</CardTitle>
+      </CardHeader>
+      <CardContent className="flex-grow overflow-y-auto mb-4 space-y-4 pr-2">
         {messages.map((msg, index) => (
           <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-xs md:max-w-md lg:max-w-lg p-3 rounded-lg ${msg.role === 'user' ? 'bg-primary text-background' : 'bg-gray-700 text-white'}`}>
+            <div className={`max-w-xs md:max-w-md lg:max-w-lg p-3 rounded-lg ${msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-secondary text-foreground'}`}>
               <p className="text-sm">{msg.parts}</p>
             </div>
           </div>
         ))}
         {isLoading && (
             <div className="flex justify-start">
-                <div className="max-w-xs p-3 rounded-lg bg-gray-700 text-white">
+                <div className="max-w-xs p-3 rounded-lg bg-secondary text-foreground">
                     <p className="text-sm animate-pulse">Thinking...</p>
                 </div>
             </div>
         )}
         <div ref={messagesEndRef} />
-      </div>
-      <form onSubmit={handleSendMessage} className="flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about the analysis..."
-          className="flex-grow bg-gray-900 border border-border rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary"
-          disabled={isLoading}
-        />
-        <button type="submit" className="px-4 py-2 bg-primary hover:bg-yellow-600 rounded-lg text-background font-semibold transition-colors disabled:opacity-50" disabled={isLoading}>
-          Send
-        </button>
-      </form>
-    </div>
+      </CardContent>
+      <CardFooter>
+        <form onSubmit={handleSendMessage} className="flex gap-2 w-full">
+          <Input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about the analysis..."
+            className="flex-grow"
+            disabled={isLoading}
+          />
+          <Button type="submit" disabled={isLoading} size="icon">
+            <Send className="h-4 w-4" />
+          </Button>
+        </form>
+      </CardFooter>
+    </Card>
   );
 }
