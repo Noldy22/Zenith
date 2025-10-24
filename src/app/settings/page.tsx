@@ -3,60 +3,87 @@
 import { useState, useEffect } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import type { Settings } from '../../lib/types';
 
-const getBackendUrl = () => {
-    // Keep this function as is
-    if (typeof window !== 'undefined') {
-        return `http://${window.location.hostname}:5000`;
-    }
-    return 'http://127.0.0.1:5000'; // Default for server-side rendering
+// --- Zenith/Shadcn UI Components ---
+import { Button } from '@/components/ui/button';
+import { 
+  Card, 
+  CardContent, 
+  CardHeader, 
+  CardTitle,
+  CardDescription,
+  CardFooter
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+// --- Core Imports ---
+import type { Settings } from '../../lib/types';
+import { getBackendUrl } from '@/lib/utils'; // Use centralized util
+import { BrainCircuit } from 'lucide-react'; // Icon for the train button
+
+// Default empty state
+const defaultSettings: Settings = {
+    trading_style: "DAY_TRADING",
+    risk_per_trade: 2.0,
+    max_daily_loss: 5.0,
+    account_balance: 10000.0,
+    auto_trading_enabled: false,
+    notifications_enabled: true,
+    min_confluence: 2,
+    pairs_to_trade: [] as string[],
+    mt5_credentials: {
+        login: "",
+        password: "",
+        server: "",
+        terminal_path: ""
+    },
+    breakeven_enabled: false,
+    breakeven_pips: 20,
+    trailing_stop_enabled: false,
+    trailing_stop_pips: 20,
+    proactive_close_enabled: false,
 };
 
 const SettingsPage = () => {
-    const [settings, setSettings] = useState<Settings>({
-        trading_style: "DAY_TRADING",
-        risk_per_trade: 2.0,
-        max_daily_loss: 5.0,
-        account_balance: 10000.0,
-        auto_trading_enabled: false,
-        notifications_enabled: true,
-        min_confluence: 2,
-        pairs_to_trade: [] as string[],
-        mt5_credentials: {
-            login: "",
-            password: "",
-            server: "",
-            terminal_path: ""
-        },
-        breakeven_enabled: false,
-        breakeven_pips: 20,
-        trailing_stop_enabled: false,
-        trailing_stop_pips: 20,
-        proactive_close_enabled: false,
-    });
+    const [settings, setSettings] = useState<Settings>(defaultSettings);
     const [isLoading, setIsLoading] = useState(true);
-    // State to hold the comma-separated string for the pairs input
+    const [isSaving, setIsSaving] = useState(false);
+    const [isTraining, setIsTraining] = useState(false);
+    
+    // State for the comma-separated string for the pairs input
     const [pairsInput, setPairsInput] = useState('');
 
     useEffect(() => {
-        // Fetch initial settings from backend
         const fetchSettings = async () => {
-            setIsLoading(true); // Set loading true at the start
+            setIsLoading(true);
             try {
                 const response = await fetch(`${getBackendUrl()}/api/settings`);
                 if (response.ok) {
                     const data = await response.json();
-                    // Ensure pairs_to_trade is always an array
+                    
+                    // --- Data Sanitization ---
                     data.pairs_to_trade = Array.isArray(data.pairs_to_trade) ? data.pairs_to_trade : [];
-                    // Ensure login is treated as a string for the input field
-                    if (data.mt5_credentials && data.mt5_credentials.login) {
-                        data.mt5_credentials.login = String(data.mt5_credentials.login);
-                    } else if (data.mt5_credentials) {
-                        data.mt5_credentials.login = ""; // Ensure it's an empty string if 0 or null/undefined
+                    
+                    if (data.mt5_credentials) {
+                        data.mt5_credentials.login = String(data.mt5_credentials.login || "");
+                        data.mt5_credentials.password = data.mt5_credentials.password || "";
+                        data.mt5_credentials.server = data.mt5_credentials.server || "";
+                        data.mt5_credentials.terminal_path = data.mt5_credentials.terminal_path || "";
+                    } else {
+                        data.mt5_credentials = defaultSettings.mt5_credentials;
                     }
-                    setSettings(data);
-                    // Initialize the pairsInput state based on fetched data
+                    
+                    setSettings({ ...defaultSettings, ...data }); // Merge with defaults
                     setPairsInput(data.pairs_to_trade.join(', '));
                 } else {
                     const errorData = await response.json().catch(() => ({ error: "Could not fetch settings" }));
@@ -72,53 +99,54 @@ const SettingsPage = () => {
         fetchSettings();
     }, []);
 
-    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-        const { name, value, type } = e.target;
-        // Use 'checked' for checkbox type, otherwise use 'value'
-        const isCheckbox = type === 'checkbox';
-        const finalValue = isCheckbox ? (e.target as HTMLInputElement).checked : value;
-
+    // --- Component-Specific Handlers ---
+    
+    // Generic handler for simple Input and Select changes
+    const handleChange = (name: string, value: string | number) => {
         const keys = name.split('.');
-
-        // Special handling for pairs_to_trade input
-        if (name === 'pairs_to_trade_input') {
-            setPairsInput(value); // Update the raw input string
-            // Convert comma-separated string to array, trim whitespace, remove empty strings
-            const pairsArray = value.split(',')
-                                  .map(pair => pair.trim().toUpperCase()) // Trim and convert to uppercase
-                                  .filter(pair => pair !== ''); // Remove empty entries
+        if (keys.length > 1) {
             setSettings(prev => ({
                 ...prev,
-                pairs_to_trade: pairsArray
-            }));
-        } else if (keys.length > 1) {
-            // Handle nested properties like mt5_credentials.login
-            setSettings(prev => {
-                let temp = { ...prev };
-                let current = temp as any; // Use 'any' for easier nested access
-                for (let i = 0; i < keys.length - 1; i++) {
-                    // Ensure intermediate objects exist
-                    if (!current[keys[i]]) {
-                        current[keys[i]] = {};
-                    }
-                    current = current[keys[i]];
+                [keys[0]]: {
+                    ...(prev as any)[keys[0]],
+                    [keys[1]]: value
                 }
-                current[keys[keys.length - 1]] = finalValue;
-                return temp;
-            });
+            }));
         } else {
-            // Handle top-level properties
             setSettings(prev => ({
                 ...prev,
-                [name]: finalValue
+                [name]: value
             }));
         }
     };
+    
+    // Handler for Switch components
+    const handleSwitchChange = (name: keyof Settings) => (checked: boolean) => {
+        setSettings(prev => ({
+            ...prev,
+            [name]: checked
+        }));
+    };
 
+    // Handler for Slider components
+    const handleSliderChange = (name: keyof Settings) => (value: number[]) => {
+        setSettings(prev => ({
+            ...prev,
+            [name]: value[0]
+        }));
+    };
+
+    // Handler for Pairs Input
+    const handlePairsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setPairsInput(e.target.value);
+    };
+
+    // --- Main Actions ---
 
     const handleSaveSettings = async () => {
+        setIsSaving(true);
         toast.info("Saving settings...");
-        // Ensure pairs_to_trade is derived from the latest pairsInput before saving
+        
         const pairsArray = pairsInput.split(',')
                                     .map(pair => pair.trim().toUpperCase())
                                     .filter(pair => pair !== '');
@@ -126,25 +154,17 @@ const SettingsPage = () => {
         const settingsToSave = {
             ...settings,
             pairs_to_trade: pairsArray,
-             // Convert login back to number or null before sending if needed by backend,
-             // but current backend handles string/int conversion safely.
-             // mt5_credentials: {
-             //    ...settings.mt5_credentials,
-             //    login: settings.mt5_credentials.login ? parseInt(settings.mt5_credentials.login, 10) : 0
-             // }
         };
-
 
         try {
             const response = await fetch(`${getBackendUrl()}/api/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settingsToSave), // Send the potentially modified settings
+                body: JSON.stringify(settingsToSave),
             });
             if (response.ok) {
                 toast.success("Settings saved successfully!");
-                // Optionally re-fetch settings to confirm or update local state precisely
-                // fetchSettings();
+                setSettings(settingsToSave); // Update local state to match saved state
             } else {
                  const errorData = await response.json().catch(() => ({ error: "Failed to save settings" }));
                  toast.error(`Failed to save settings: ${errorData.error || response.statusText}`);
@@ -152,10 +172,13 @@ const SettingsPage = () => {
         } catch (error) {
             console.error("Save settings error:", error);
             toast.error("Error connecting to backend.");
+        } finally {
+            setIsSaving(false);
         }
     };
 
     const handleTrainModel = async () => {
+        setIsTraining(true);
         toast.info("Starting model training... This may take a moment.");
         try {
             const response = await fetch(`${getBackendUrl()}/api/train_model`, {
@@ -170,151 +193,233 @@ const SettingsPage = () => {
         } catch (error) {
             console.error("Train model error:", error);
             toast.error("Error connecting to backend for training.");
+        } finally {
+            setIsTraining(false);
         }
     };
 
     if (isLoading) {
-        return <div className="p-8 text-center">Loading settings...</div>;
+        return <div className="p-8 text-center animate-pulse">Loading settings...</div>;
     }
 
     return (
-        <main className="p-8 bg-gray-900 text-white min-h-screen">
+        <main className="p-4 sm:p-6 lg:p-8">
             <ToastContainer theme="dark" position="bottom-right" />
             <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-amber-600 mb-8">
                 Settings
             </h1>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
                 {/* General Settings */}
-                <div className="bg-gray-800 p-6 rounded-lg shadow-md">
-                    <h2 className="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">General</h2>
-                    <div className="space-y-4">
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Trading Style</label>
-                            <select name="trading_style" value={settings.trading_style} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary">
-                                <option value="SCALPING">Scalping</option>
-                                <option value="DAY_TRADING">Day Trading</option>
-                                <option value="SWING_TRADING">Swing Trading</option>
-                                <option value="POSITION_TRADING">Position Trading</option>
-                            </select>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>General</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                        <div className="space-y-2">
+                            <Label htmlFor="trading_style">Trading Style</Label>
+                            <Select 
+                                value={settings.trading_style} 
+                                onValueChange={(value) => handleChange("trading_style", value)}
+                            >
+                                <SelectTrigger id="trading_style">
+                                    <SelectValue placeholder="Select style..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="SCALPING">Scalping</SelectItem>
+                                    <SelectItem value="DAY_TRADING">Day Trading</SelectItem>
+                                    <SelectItem value="SWING_TRADING">Swing Trading</SelectItem>
+                                    <SelectItem value="POSITION_TRADING">Position Trading</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Risk Per Trade: {Number(settings.risk_per_trade).toFixed(1)}%</label>
-                            <input type="range" name="risk_per_trade" min="0.1" max="10" step="0.1" value={settings.risk_per_trade} onChange={handleInputChange} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg accent-primary" />
+                        <div className="space-y-2">
+                            <Label>Risk Per Trade: {Number(settings.risk_per_trade).toFixed(1)}%</Label>
+                            <Slider 
+                                value={[settings.risk_per_trade]} 
+                                onValueChange={handleSliderChange("risk_per_trade")}
+                                min={0.1} max={10} step={0.1}
+                            />
                         </div>
-                         <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Max Daily Loss: {Number(settings.max_daily_loss).toFixed(1)}%</label>
-                            <input type="range" name="max_daily_loss" min="1" max="20" step="0.5" value={settings.max_daily_loss} onChange={handleInputChange} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg accent-primary" />
+                         <div className="space-y-2">
+                            <Label>Max Daily Loss: {Number(settings.max_daily_loss).toFixed(1)}%</Label>
+                            <Slider 
+                                value={[settings.max_daily_loss]}
+                                onValueChange={handleSliderChange("max_daily_loss")}
+                                min={1} max={20} step={0.5}
+                            />
                         </div>
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Account Balance</label>
-                            <input type="number" name="account_balance" value={settings.account_balance} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                        </div>
-                    </div>
-                </div>
+                        {/* REMOVED "Account Balance" input as requested. 
+                          It's now fetched automatically on the dashboard.
+                        */}
+                    </CardContent>
+                </Card>
 
                 {/* Trading Preferences */}
-                <div className="bg-gray-800 p-6 rounded-lg shadow-md">
-                    <h2 className="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Trading Preferences</h2>
-                    <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-gray-300">Auto-Trading Enabled</label>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="auto_trading_enabled" checked={settings.auto_trading_enabled} onChange={handleInputChange} className="sr-only peer" />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                            </label>
-                        </div>
-                        <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-gray-300">Notifications Enabled</label>
-                             <label className="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="notifications_enabled" checked={settings.notifications_enabled} onChange={handleInputChange} className="sr-only peer" />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                            </label>
-                        </div>
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Minimum Confluence Signals</label>
-                            <input type="number" name="min_confluence" min="1" max="4" value={settings.min_confluence} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                        </div>
-                        {/* --- NEW INPUT FOR AUTO-TRADE PAIRS --- */}
-                        <div>
-                            <label htmlFor="pairs_to_trade_input" className="block mb-2 text-sm font-medium text-gray-300">
-                                Pairs to Auto-Trade (comma-separated)
-                            </label>
-                            <input
-                                type="text"
-                                id="pairs_to_trade_input"
-                                name="pairs_to_trade_input"
-                                value={pairsInput}
-                                onChange={handleInputChange}
-                                placeholder="e.g., EURUSD, GBPUSD, XAUUSD"
-                                className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary uppercase"
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Trading Preferences</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                        <div className="flex items-center justify-between space-x-2">
+                            <Label htmlFor="auto_trading_enabled">Auto-Trading Enabled</Label>
+                            <Switch 
+                                id="auto_trading_enabled"
+                                checked={settings.auto_trading_enabled} 
+                                onCheckedChange={handleSwitchChange("auto_trading_enabled")} 
                             />
-                             <p className="mt-1 text-xs text-gray-500">Enter symbols exactly as shown in MT5, separated by commas.</p>
                         </div>
-                         {/* --- END NEW INPUT --- */}
-                    </div>
-                </div>
+                        <div className="flex items-center justify-between space-x-2">
+                            <Label htmlFor="notifications_enabled">Notifications Enabled</Label>
+                            <Switch 
+                                id="notifications_enabled"
+                                checked={settings.notifications_enabled} 
+                                onCheckedChange={handleSwitchChange("notifications_enabled")}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="min_confluence">Minimum Confluence Signals</Label>
+                            <Input 
+                                id="min_confluence" 
+                                type="number" 
+                                value={settings.min_confluence} 
+                                onChange={(e) => handleChange("min_confluence", parseInt(e.target.value))} 
+                                min="1" max="4"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="pairs_to_trade_input">
+                                Pairs to Auto-Trade (comma-separated)
+                            </Label>
+                            <Input
+                                id="pairs_to_trade_input"
+                                value={pairsInput}
+                                onChange={handlePairsChange}
+                                placeholder="e.g., EURUSD, GBPUSD, XAUUSD"
+                                className="uppercase"
+                            />
+                             <p className="text-sm text-muted-foreground">Enter symbols exactly as in MT5, separated by commas.</p>
+                        </div>
+                    </CardContent>
+                </Card>
 
                 {/* MT5 Connection */}
-                <div className="bg-gray-800 p-6 rounded-lg shadow-md col-span-1 md:col-span-2">
-                    <h2 className="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">MT5 Connection</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <input type="text" name="mt5_credentials.login" placeholder="Account Number" value={settings.mt5_credentials.login} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                        <input type="password" name="mt5_credentials.password" placeholder="Password" value={settings.mt5_credentials.password} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                        <input type="text" name="mt5_credentials.server" placeholder="Broker Server" value={settings.mt5_credentials.server} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                        <input type="text" name="mt5_credentials.terminal_path" placeholder="MT5 Terminal Path (e.g., C:\\Program Files\\...)" value={settings.mt5_credentials.terminal_path} onChange={handleInputChange} className="p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" />
-                    </div>
-                </div>
+                <Card className="md:col-span-2">
+                    <CardHeader>
+                        <CardTitle>MT5 Connection</CardTitle>
+                        <CardDescription>
+                            Your credentials are sent directly to your server and never stored by us.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="mt5_login">Account Number</Label>
+                            <Input id="mt5_login" value={settings.mt5_credentials.login} onChange={(e) => handleChange("mt5_credentials.login", e.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="mt5_password">Password</Label>
+                            <Input id="mt5_password" type="password" value={settings.mt5_credentials.password} onChange={(e) => handleChange("mt5_credentials.password", e.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="mt5_server">Broker Server</Label>
+                            <Input id="mt5_server" value={settings.mt5_credentials.server} onChange={(e) => handleChange("mt5_credentials.server", e.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="mt5_path">MT5 Terminal Path</Label>
+                            <Input id="mt5_path" value={settings.mt5_credentials.terminal_path} onChange={(e) => handleChange("mt5_credentials.terminal_path", e.target.value)} placeholder="C:\Program Files\..." />
+                        </div>
+                    </CardContent>
+                </Card>
 
                 {/* Trade Management */}
-                <div className="bg-gray-800 p-6 rounded-lg shadow-md col-span-1 md:col-span-2">
-                    <h2 className="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Trade Management</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                <Card className="md:col-span-2">
+                    <CardHeader>
+                        <CardTitle>Trade Management</CardTitle>
+                        <CardDescription>
+                            Automated rules for managing your open positions.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
                         {/* Breakeven */}
-                        <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-gray-300">Enable Breakeven</label>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="breakeven_enabled" checked={settings.breakeven_enabled} onChange={handleInputChange} className="sr-only peer" />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                            </label>
+                        <div className="flex items-center justify-between space-x-2">
+                            <Label htmlFor="breakeven_enabled">Enable Breakeven</Label>
+                            <Switch 
+                                id="breakeven_enabled" 
+                                checked={settings.breakeven_enabled}
+                                onCheckedChange={handleSwitchChange("breakeven_enabled")}
+                            />
                         </div>
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Breakeven Trigger (Pips)</label>
-                            <input type="number" name="breakeven_pips" value={settings.breakeven_pips} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" disabled={!settings.breakeven_enabled} />
+                        <div className="space-y-2">
+                            <Label htmlFor="breakeven_pips">Breakeven Trigger (Pips)</Label>
+                            <Input 
+                                id="breakeven_pips"
+                                type="number" 
+                                value={settings.breakeven_pips} 
+                                onChange={(e) => handleChange("breakeven_pips", parseInt(e.target.value))} 
+                                disabled={!settings.breakeven_enabled} 
+                            />
                         </div>
 
                         {/* Trailing Stop */}
-                        <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-gray-300">Enable Trailing Stop</label>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="trailing_stop_enabled" checked={settings.trailing_stop_enabled} onChange={handleInputChange} className="sr-only peer" />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                            </label>
+                        <div className="flex items-center justify-between space-x-2">
+                            <Label htmlFor="trailing_stop_enabled">Enable Trailing Stop</Label>
+                            <Switch 
+                                id="trailing_stop_enabled" 
+                                checked={settings.trailing_stop_enabled}
+                                onCheckedChange={handleSwitchChange("trailing_stop_enabled")}
+                            />
                         </div>
-                        <div>
-                            <label className="block mb-2 text-sm font-medium text-gray-300">Trailing Stop Distance (Pips)</label>
-                            <input type="number" name="trailing_stop_pips" value={settings.trailing_stop_pips} onChange={handleInputChange} className="w-full p-2 bg-gray-700 rounded border border-gray-600 focus:ring-primary focus:border-primary" disabled={!settings.trailing_stop_enabled} />
+                        <div className="space-y-2">
+                            <Label htmlFor="trailing_stop_pips">Trailing Stop Distance (Pips)</Label>
+                            <Input 
+                                id="trailing_stop_pips"
+                                type="number" 
+                                value={settings.trailing_stop_pips} 
+                                onChange={(e) => handleChange("trailing_stop_pips", parseInt(e.target.value))} 
+                                disabled={!settings.trailing_stop_enabled} 
+                            />
                         </div>
 
-                        {/* Proactive Close */}
-                        <div className="flex items-center justify-between md:col-span-2">
-                            <label className="text-sm font-medium text-gray-300">Enable Proactive Close</label>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="proactive_close_enabled" checked={settings.proactive_close_enabled} onChange={handleInputChange} className="sr-only peer" />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                            </label>
+                        {/* Proactive Close - FIXED: Removed md:col-span-2 to align with the grid */}
+                        <div className="flex items-center justify-between space-x-2">
+                            <Label htmlFor="proactive_close_enabled" className="text-foreground">
+                                Enable Proactive Close
+                            </Label>
+                            <Switch 
+                                id="proactive_close_enabled" 
+                                checked={settings.proactive_close_enabled}
+                                onCheckedChange={handleSwitchChange("proactive_close_enabled")}
+                            />
                         </div>
-                    </div>
-                </div>
+                         {/* This description now sits neatly under the toggle in the same column */}
+                        <div className="space-y-2">
+                             <p className="text-sm text-muted-foreground pt-2">
+                                Allow AI to close trades early based on counter-signals.
+                            </p>
+                        </div>
+                    </CardContent>
+                </Card>
             </div>
 
-            <div className="mt-8 flex justify-center items-center space-x-4">
-                <button onClick={handleSaveSettings} className="px-8 py-3 bg-amber-500 text-gray-900 font-bold rounded-lg hover:bg-amber-600 transition-colors shadow-md">
-                    Save Settings
-                </button>
-                <button onClick={handleTrainModel} className="px-8 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-md">
-                    Train Model
-                </button>
+            {/* Actions Footer */}
+            <div className="mt-6 flex justify-center items-center space-x-4">
+                <Button 
+                    size="lg" 
+                    onClick={handleSaveSettings} 
+                    disabled={isSaving || isTraining}
+                >
+                    {isSaving ? "Saving..." : "Save Settings"}
+                </Button>
+                <Button 
+                    size="lg" 
+                    variant="secondary" 
+                    onClick={handleTrainModel}
+                    disabled={isSaving || isTraining}
+                >
+                    <BrainCircuit className="w-4 h-4 mr-2" />
+                    {isTraining ? "Training Model..." : "Train Model"}
+                </Button>
             </div>
         </main>
     );
