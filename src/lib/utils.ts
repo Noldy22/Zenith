@@ -1,3 +1,10 @@
+import { type ClassValue, clsx } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
 export const getBackendUrl = (): string => {
     // Priority 1: Use the environment variable (for production, staging, or local override)
     // NEXT_PUBLIC_ variables are exposed to the browser by Next.js.

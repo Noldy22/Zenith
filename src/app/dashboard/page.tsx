@@ -9,12 +9,22 @@ import { Settings, BarChart2 } from 'lucide-react';
 // --- Core Imports ---
 import { getBackendUrl } from '@/lib/utils';
 
+// --- UI Component Imports ---
+import { Button } from '@/components/ui/button';
+import { 
+  Card, 
+  CardContent, 
+  CardHeader, 
+  CardTitle,
+  CardFooter
+} from '@/components/ui/card';
+
 // --- Hook Imports ---
 import { useSocketConnection } from '@/hooks/useSocketConnection';
 import { useAppSettings } from '@/hooks/useAppSettings';
 import { useAccountData } from '@/hooks/useAccountData';
 
-// --- Component Imports ---
+// --- App Component Imports ---
 import CandlestickChart from '../../components/CandlestickChart';
 import PositionTracker from '../../components/PositionTracker';
 import StatsPanel from '../../components/StatsPanel';
@@ -61,70 +71,87 @@ export default function DashboardPage() {
     }
 
     return (
-        <main className="p-4 sm:p-6 lg:p-8 bg-gray-900 text-white min-h-screen">
+        <main className="p-4 sm:p-6 lg:p-8 min-h-screen">
             <ToastContainer theme="dark" position="bottom-right" />
 
-            <header className="flex justify-between items-center mb-6 p-4 bg-gray-800 rounded-lg shadow-lg">
-                <div>
-                    <h1 className="text-xl font-bold">Trading Dashboard</h1>
-                    <p className="text-sm text-gray-400">
-                        Account: {settings?.mt5_credentials?.login || 'N/A'} | Balance: ${accountInfo.balance.toFixed(2)} | Equity: ${accountInfo.equity.toFixed(2)} |
-                        <span className={`ml-2 font-semibold ${accountInfo.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            P/L: ${accountInfo.profit.toFixed(2)}
+            {/* Use Card for the header */}
+            <Card className="mb-6">
+                <CardHeader className="flex flex-row flex-wrap justify-between items-center">
+                    <div>
+                        <CardTitle>Trading Dashboard</CardTitle>
+                        <p className="text-sm text-muted-foreground pt-1">
+                            Account: {settings?.mt5_credentials?.login || 'N/A'} | Balance: ${accountInfo.balance.toFixed(2)} | Equity: ${accountInfo.equity.toFixed(2)} |
+                            <span className={`ml-2 font-semibold ${accountInfo.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                P/L: ${accountInfo.profit.toFixed(2)}
+                            </span>
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-4 pt-4 sm:pt-0">
+                        <Button variant="ghost" asChild>
+                            <Link href="/settings" className="flex items-center gap-1">
+                                <Settings size={16} /> Settings
+                            </Link>
+                        </Button>
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold ${settings?.auto_trading_enabled ? 'bg-green-500' : 'bg-red-500'}`}>
+                            Auto-Trade: {settings?.auto_trading_enabled ? 'ON' : 'OFF'}
                         </span>
-                    </p>
-                </div>
-                <div className="flex items-center gap-4">
-                    <Link href="/settings" className="p-2 rounded-md hover:bg-gray-700 flex items-center gap-1">
-                        <Settings size={16} /> Settings
-                    </Link>
-                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${settings?.auto_trading_enabled ? 'bg-green-500' : 'bg-red-500'}`}>
-                        Auto-Trade: {settings?.auto_trading_enabled ? 'ON' : 'OFF'}
-                    </span>
-                </div>
-            </header>
+                    </div>
+                </CardHeader>
+            </Card>
 
             {tradeSignal && (
-                <div className="bg-yellow-500/20 border border-yellow-500 text-yellow-300 p-4 rounded-lg mb-6 shadow-xl animate-pulse">
-                    <h3 className="font-bold">🚨 TRADE ALERT: {tradeSignal.trade_type} {tradeSignal.symbol}</h3>
-                    <p>Entry: ~{tradeSignal.entry} | SL: {tradeSignal.sl} | TP: {tradeSignal.tp}</p>
-                    <p>Position Size: {tradeSignal.lot_size} lots</p>
-                    <div className="mt-4">
-                        <button 
+                /* Use Card for the Trade Alert */
+                <Card className="bg-yellow-500/20 border-yellow-500 text-yellow-300 mb-6 shadow-xl animate-pulse">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                           🚨 TRADE ALERT: {tradeSignal.trade_type} {tradeSignal.symbol}
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <p>Entry: ~{tradeSignal.entry} | SL: {tradeSignal.sl} | TP: {tradeSignal.tp}</p>
+                        <p>Position Size: {tradeSignal.lot_size} lots</p>
+                    </CardContent>
+                    <CardFooter className="gap-4">
+                        <Button 
                             onClick={handleConfirmTrade} 
-                            className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-bold mr-2 disabled:opacity-50"
+                            className="bg-green-600 hover:bg-green-700"
                             disabled={isSubmitting}
                         >
                             {isSubmitting ? "Executing..." : "Confirm Trade"}
-                        </button>
-                        <button 
+                        </Button>
+                        <Button 
+                            variant="destructive"
                             onClick={() => setTradeSignal(null)} 
-                            className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg font-bold disabled:opacity-50"
                             disabled={isSubmitting}
                         >
                             Reject
-                        </button>
-                    </div>
-                </div>
+                        </Button>
+                    </CardFooter>
+                </Card>
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-gray-800 p-4 rounded-lg shadow-lg">
-                    <h2 className="text-2xl font-semibold mb-4 flex items-center gap-2">
-                        <BarChart2 size={20} /> Market Analysis
-                    </h2>
-                    {settings?.mt5_credentials?.login ? (
-                        <CandlestickChart
-                            credentials={settings.mt5_credentials}
-                            symbol={settings.pairs_to_trade[0] || 'EURUSD'}
-                            timeframe="H1"
-                        />
-                    ) : (
-                        <div className="h-96 flex items-center justify-center">
-                            <p className="text-gray-500">Please enter MT5 credentials in Settings to view chart.</p>
-                        </div>
-                    )}
-                </div>
+                {/* Use Card for the main chart */}
+                <Card className="lg:col-span-2">
+                    <CardHeader>
+                        <CardTitle className="text-2xl font-semibold flex items-center gap-2">
+                            <BarChart2 size={20} /> Market Analysis
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {settings?.mt5_credentials?.login ? (
+                            <CandlestickChart
+                                credentials={settings.mt5_credentials}
+                                symbol={settings.pairs_to_trade[0] || 'EURUSD'}
+                                timeframe="H1"
+                            />
+                        ) : (
+                            <div className="h-96 flex items-center justify-center">
+                                <p className="text-muted-foreground">Please enter MT5 credentials in Settings to view chart.</p>
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
 
                 <aside className="space-y-6">
                     <PositionTracker credentials={settings?.mt5_credentials} />
