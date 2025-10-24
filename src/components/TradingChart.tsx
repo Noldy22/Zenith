@@ -100,9 +100,7 @@ export const TradingChart = (props: {
         if (data.length > 0) {
             candlestickSeries.setData(data);
 
-            // --- FIXED: Set a comfortable default zoom ---
-            // Instead of chart.timeScale().fitContent(), we set a logical range
-            // to show the last 100 bars, which is much more readable.
+            // Set a comfortable default zoom (last 100 bars)
             const lastBarIndex = data.length - 1;
             const firstVisibleIndex = Math.max(0, lastBarIndex - 100); 
             
@@ -110,7 +108,6 @@ export const TradingChart = (props: {
                 from: firstVisibleIndex,
                 to: lastBarIndex
             });
-            // --- END FIX ---
         }
 
         const priceLines: IPriceLine[] = [];
@@ -138,9 +135,6 @@ export const TradingChart = (props: {
                 const timeScale = chart.timeScale();
                 const visibleRange = timeScale.getVisibleLogicalRange();
                 if (!visibleRange) return;
-
-                const lastVisibleTime = visibleRange.to;
-                if (!lastVisibleTime) return;
                 
                 // Find the logical index for the end of the chart (last data point)
                 const lastDataIndex = data.length - 1;
@@ -166,6 +160,12 @@ export const TradingChart = (props: {
                       ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
                     }
                 };
+            
+            // --- ADDED THIS SECTION ---
+            // Draw Supply and Demand Zones
+            supplyZones?.forEach(zone => drawZone(zone, 'rgba(239, 83, 80, 0.2)')); // Red for Supply
+            demandZones?.forEach(zone => drawZone(zone, 'rgba(38, 166, 154, 0.2)')); // Green for Demand
+            // --- END ADDED SECTION ---
 
             // Draw Bullish and Bearish Order Blocks
             bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
