@@ -10,7 +10,16 @@ def manage_breakeven(position, settings, symbol_info):
     if be_pips <= 0:
         return
 
-    pip_size = symbol_info.point * 10
+    # --- FIX: Robust pip_size calculation ---
+    point = symbol_info.point
+    digits = symbol_info.digits
+    pip_size = point
+    if digits in (3, 5): # 5-digit FX (point=0.00001, pip=0.0001) or 3-digit JPY (point=0.001, pip=0.01)
+        pip_size = point * 10
+    # For 2 or 4-digit, 1 point = 1 pip
+    if pip_size == 0:
+        pip_size = 0.0001 # Fallback
+
     current_price = mt5.symbol_info_tick(position.symbol).bid if position.type == 0 else mt5.symbol_info_tick(position.symbol).ask
 
     if position.type == 0: # Buy position
@@ -51,12 +60,20 @@ def manage_trailing_stop(position, settings, symbol_info):
     if ts_pips <= 0:
         return
 
-    pip_size = symbol_info.point * 10
+    # --- FIX: Robust pip_size calculation ---
+    point = symbol_info.point
+    digits = symbol_info.digits
+    pip_size = point
+    if digits in (3, 5):
+        pip_size = point * 10
+    if pip_size == 0:
+        pip_size = 0.0001 # Fallback
 
     if position.type == 0:  # Buy
         current_price = mt5.symbol_info_tick(position.symbol).bid
         new_sl = current_price - (ts_pips * pip_size)
-        if new_sl > position.sl:
+        # Check if new_sl is higher than current sl AND higher than open price (to avoid locking in a loss)
+        if new_sl > position.sl and new_sl > position.price_open:
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": position.ticket,
@@ -67,7 +84,8 @@ def manage_trailing_stop(position, settings, symbol_info):
     else:  # Sell
         current_price = mt5.symbol_info_tick(position.symbol).ask
         new_sl = current_price + (ts_pips * pip_size)
-        if new_sl < position.sl:
+        # Check if new_sl is lower than current sl AND lower than open price
+        if new_sl < position.sl and new_sl < position.price_open:
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": position.ticket,
@@ -78,25 +96,9 @@ def manage_trailing_stop(position, settings, symbol_info):
 
 def monitor_and_close_trades(position, settings, _run_full_analysis, TRADING_STYLE_TIMEFRAMES):
     """Monitors a trade and closes it if the market conditions are no longer favorable."""
-    if not settings.get('proactive_close_enabled', False):
-        return
-
-    symbol = position.symbol
-    analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
-
-    buys = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Buy')
-    sells = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Sell')
-
-    current_market_bias = "Neutral"
-    if buys > sells:
-        current_market_bias = "Buy"
-    elif sells > buys:
-        current_market_bias = "Sell"
-
-    if position.type == 0 and current_market_bias == "Sell": # Open buy, market is now bearish
-        close_trade(position)
-    elif position.type == 1 and current_market_bias == "Buy": # Open sell, market is now bullish
-        close_trade(position)
+    # This function is deprecated in app.py, but we leave it for potential future reference
+    # The logic was moved directly into the trade_monitoring_loop in app.py
+    pass
 
 def close_trade(position):
     """Closes an open position."""
@@ -118,7 +120,8 @@ def close_trade(position):
         "magic": 234000,
         "comment": "Zenith AI Proactive Close",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        # --- FIX: Changed from IOC to FOK to match app.py ---
+        "type_filling": mt5.ORDER_FILLING_FOK,
     }
 
     result = mt5.order_send(request)

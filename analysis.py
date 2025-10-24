@@ -39,7 +39,7 @@ def calculate_volume_profile(df, bins=20):
         df['volume'] = df.get('tick_volume', pd.Series(np.ones(len(df)), index=df.index))
 
     price_range = pd.cut(df['close'], bins=bins)
-    volume_distribution = df.groupby(price_range)['volume'].sum()
+    volume_distribution = df.groupby(price_range, observed=True)['volume'].sum()
 
     poc_level = volume_distribution.idxmax().mid if not volume_distribution.empty else 0
     hvn_levels = volume_distribution[volume_distribution > volume_distribution.quantile(0.75)]

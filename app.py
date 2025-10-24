@@ -491,83 +491,67 @@ def _run_single_timeframe_analysis(df, symbol):
 
 
 # --- *** MODIFIED: Trade Execution Logic (Simplified Size Calc) *** ---
-def _calculate_position_size(balance, risk_pct, sl_pips, symbol):
-    """Simplified position size calculation. Requires symbol info for accuracy."""
-    if sl_pips <= 0: return 0.01 # Prevent division by zero or invalid size
+# --- FIX 2 (REVISED): Replaced _calculate_position_size ---
+def _calculate_position_size(balance, risk_pct, entry_price, sl_price, symbol):
+    """
+    Robust position size calculation based on contract size.
+    This avoids unreliable 'point' and 'tick_value' from the broker.
+    """
+    if not mt5_manager.is_initialized:
+        print("Error: Cannot calculate size, MT5 not connected.")
+        return 0.01
 
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: Could not get symbol info for {symbol}")
+        return 0.01
+
+    # 1. Calculate Amount to Risk
     amount_to_risk = balance * (risk_pct / 100.0)
-    value_per_pip_per_lot = 10.0 # Default assumption (e.g., for EURUSD standard lot)
-    min_lot = 0.01 # Default min lot
+    
+    # 2. Calculate Stop Loss distance in price
+    sl_distance_price = abs(entry_price - sl_price)
+    if sl_distance_price == 0:
+        print("Error: SL and Entry price are identical.")
+        return 0.01
+    
+    # 3. Get Contract Size
+    contract_size = symbol_info.trade_contract_size
+    if contract_size <= 0:
+        print(f"Error: Symbol {symbol} has invalid contract size: {contract_size}")
+        return 0.01
 
-    if mt5_manager.is_initialized:
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info:
-            min_lot = symbol_info.volume_min 
-            point = symbol_info.point
-            digits = symbol_info.digits
-            tick_value = symbol_info.trade_tick_value # Value of one tick (point) movement for one standard lot
-            contract_size = symbol_info.trade_contract_size
-
-            # --- NEW ROBUST PIP VALUE LOGIC ---
-            
-            # Standardize pip size
-            pip_size_in_points = 1
-            if digits in (3, 5): # 5-digit FX (point=0.00001, pip=0.0001) or 3-digit JPY (point=0.001, pip=0.01)
-                pip_size_in_points = 10
-            # For 2 or 4-digit, 1 point = 1 pip, so points_per_pip = 1
-            
-            # Calculate pip value based on points
-            calculated_pip_value = tick_value * pip_size_in_points
-            
-            # --- Broker Data Sanity Check ---
-            # For major FX pairs, 1 pip (0.0001) of 1 lot (100,000) is $10.
-            # If the symbol is a major pair and the broker's tick_value is suspiciously low (like 0.1 instead of 1.0)
-            # it might be off by a factor of 10.
-            
-            is_major_fx = any(pair in symbol.upper() for pair in ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"])
-            
-            if is_major_fx and contract_size == 100000 and calculated_pip_value < 2.0 and calculated_pip_value > 0.0:
-                # e.g., broker reports tick_value=0.1 -> calculated_pip_value = 1.0
-                # This is 10x too small.
-                print(f"Warning: Broker {symbol} tick_value ({tick_value}) seems 10x too small. Correcting pip value to 10.0")
-                value_per_pip_per_lot = 10.0
-            elif "JPY" in symbol.upper() and contract_size == 100000:
-                # For JPY pairs, pip value is ~8.0-9.0.
-                # If calculated_pip_value is ~0.8-0.9, it's 10x too small.
-                if calculated_pip_value < 2.0 and calculated_pip_value > 0.0:
-                    print(f"Warning: Broker {symbol} tick_value ({tick_value}) seems 10x too small. Correcting pip value.")
-                    value_per_pip_per_lot = calculated_pip_value * 10
-                else:
-                    value_per_pip_per_lot = calculated_pip_value # Trust it
-            
-            elif calculated_pip_value > 0:
-                # For other pairs (indices, metals) or if values seem normal
-                value_per_pip_per_lot = calculated_pip_value
-            
-            if value_per_pip_per_lot == 0: # Fallback if tick_value was 0
-                print(f"Warning: {symbol} has 0 pip value. Using default 10.0")
-                value_per_pip_per_lot = 10.0
-            # --- END NEW LOGIC ---
-
-    if value_per_pip_per_lot <= 0:
-        print(f"Warning: Invalid pip value ({value_per_pip_per_lot}) for {symbol}. Defaulting size to {min_lot}.")
-        return min_lot
-
-    risk_per_lot = sl_pips * value_per_pip_per_lot
+    # 4. Calculate Risk per Lot
+    # This is the monetary value of the SL distance for 1 standard lot.
+    # Assumes the quote currency is the account currency (e.g., XAUUSD, EURUSD on a USD account)
+    risk_per_lot = sl_distance_price * contract_size
+    
     if risk_per_lot <= 0:
-         print(f"Warning: Invalid risk per lot ({risk_per_lot}) calculated. Defaulting size to {min_lot}.")
-         return min_lot
-
-    position_size = round(amount_to_risk / risk_per_lot, 2)
-    # Ensure size is at least min_lot and respects lot step if available
+        print(f"Error: Invalid risk per lot ({risk_per_lot}). SL Distance: {sl_distance_price}, Contract Size: {contract_size}")
+        return 0.01
+        
+    # 5. Calculate Position Size
+    position_size = amount_to_risk / risk_per_lot
+    
+    # 6. Adhere to volume limits
+    min_lot = symbol_info.volume_min
+    max_lot = symbol_info.volume_max
+    step_lot = symbol_info.volume_step
+    
+    # Ensure it's at least min_lot
     position_size = max(position_size, min_lot)
-    if mt5_manager.is_initialized and symbol_info and symbol_info.volume_step > 0:
-         # Round to the nearest volume step
-         position_size = round(position_size / symbol_info.volume_step) * symbol_info.volume_step
-         # Ensure it's still at least min_lot after rounding
-         position_size = max(position_size, min_lot)
+    
+    # Ensure it's not over max_lot
+    position_size = min(position_size, max_lot)
+    
+    # Round to the nearest volume step
+    if step_lot > 0:
+        position_size = round(position_size / step_lot) * step_lot
+        # Re-check min_lot after rounding
+        position_size = max(position_size, min_lot)
 
-    return round(position_size, 2) # Return rounded to 2 decimal places
+    print(f"Pos_Size Calc: RiskAmt={amount_to_risk:.2f}, SL_Dist={sl_distance_price}, ContractSize={contract_size}, RiskPerLot={risk_per_lot:.2f}, PosSize={position_size:.2f}")
+    return round(position_size, 2)
 
 
 def _execute_trade_logic(creds, trade_params):
@@ -811,26 +795,7 @@ def trading_loop():
                          print(f"Skipping {final_action} on {symbol}: Missing entry or SL price in suggestion.")
                          continue
 
-                    # --- *** NEW ROBUST SL_PIPS LOGIC *** ---
-                    symbol_info = mt5.symbol_info(symbol)
-                    sl_distance = abs(suggestion['entry'] - suggestion['sl'])
-                    pip_size = 0.0001 # Default for 4/5 digit FX
-
-                    if symbol_info:
-                        if symbol_info.digits in (2, 3): # JPY pairs
-                            pip_size = 0.01
-                        elif symbol_info.digits in (4, 5): # FX pairs
-                            pip_size = 0.0001
-                        else: # Indices, Metals
-                            pip_size = symbol_info.point # Assume 1 point = 1 pip
-                    
-                    if pip_size <= 0:
-                        print(f"Warning: {symbol} has invalid pip_size. Defaulting to 0.0001")
-                        pip_size = 0.0001
-                        
-                    sl_pips = sl_distance / pip_size
-                    # --- *** END NEW LOGIC *** ---
-
+                    # --- *** FIX 2: REMOVED OLD SL_PIPS LOGIC *** ---
 
                     # Use current balance for calculation
                     current_balance = settings['account_balance'] # Start with setting
@@ -838,11 +803,18 @@ def trading_loop():
                     if account_info:
                         current_balance = account_info.balance # Use live balance if available
 
-                    pos_size = _calculate_position_size(current_balance, settings['risk_per_trade'], sl_pips, symbol)
-
+                    # --- *** FIX 2: NEW CALL to _calculate_position_size *** ---
+                    pos_size = _calculate_position_size(
+                        current_balance, 
+                        settings['risk_per_trade'], 
+                        suggestion['entry'], 
+                        suggestion['sl'], 
+                        symbol
+                    )
 
                     if pos_size < 0.01:
-                        print(f"Skipping {final_action} on {symbol}: Calculated position size too small ({pos_size}). SL Pips: {sl_pips}")
+                        # Updated log message for clarity
+                        print(f"Skipping {final_action} on {symbol}: Calculated position size too small ({pos_size}).")
                         continue
 
                     trade_params = {
@@ -1014,35 +986,30 @@ def trade_monitoring_loop():
                                 print(f"Trade Monitor: No valid entry/SL in suggestion. Cannot scale-in.")
                                 continue
 
+                            # --- FIX 1: ADD THIS CHECK ---
+                            if suggestion.get('action') != current_market_bias:
+                                print(f"Trade Monitor: New suggestion ({suggestion.get('action')}) mismatches current bias ({current_market_bias}). Cannot scale-in.")
+                                continue
+                            # --- END FIX 1 ---
+
                             # (Optional check: prevent opening a new trade too close to an old one)
                             # ... (add logic here if you want) ...
 
-                            # --- *** NEW ROBUST SL_PIPS LOGIC *** ---
-                            symbol_info = mt5.symbol_info(symbol)
-                            sl_distance = abs(suggestion['entry'] - suggestion['sl'])
-                            pip_size = 0.0001 # Default for 4/5 digit FX
-
-                            if symbol_info:
-                                if symbol_info.digits in (2, 3): # JPY pairs
-                                    pip_size = 0.01
-                                elif symbol_info.digits in (4, 5): # FX pairs
-                                    pip_size = 0.0001
-                                else: # Indices, Metals
-                                    pip_size = symbol_info.point # Assume 1 point = 1 pip
-                            
-                            if pip_size <= 0:
-                                print(f"Warning: {symbol} has invalid pip_size. Defaulting to 0.0001")
-                                pip_size = 0.0001
-                                
-                            sl_pips = sl_distance / pip_size
-                            # --- *** END NEW LOGIC *** ---
+                            # --- *** FIX 2: REMOVED OLD SL_PIPS LOGIC *** ---
                             
                             current_balance = settings['account_balance']
                             account_info = mt5.account_info()
                             if account_info:
                                 current_balance = account_info.balance
 
-                            pos_size = _calculate_position_size(current_balance, settings['risk_per_trade'], sl_pips, symbol)
+                            # --- *** FIX 2: NEW CALL to _calculate_position_size *** ---
+                            pos_size = _calculate_position_size(
+                                current_balance, 
+                                settings['risk_per_trade'],
+                                suggestion['entry'],
+                                suggestion['sl'],
+                                symbol
+                            )
 
                             if pos_size >= 0.01:
                                 trade_params = {
@@ -1057,7 +1024,10 @@ def trade_monitoring_loop():
                                     socketio.emit('notification', {"message": msg})
                                     print(msg)
                                 except Exception as exec_e:
-                                    print(f"Trade Monitor: Scale-in execution failed for {symbol}: {exec_e}")
+                                    error_message = f"Trade Monitor: Scale-in execution failed for {symbol}: {exec_e}"
+                                    print(error_message)
+                                    # --- Emit error to frontend ---
+                                    socketio.emit('notification', {"message": error_message, "type": "error"})
                             # --- End of execute trade logic ---
 
                 except Exception as e:
@@ -1448,7 +1418,7 @@ def handle_stop_autotrade():
         STATE.autotrade_running = False # Signal the loop to stop
 
     # Wait briefly for the thread to potentially exit its current loop iteration
-    thread_to_join = STATE.autotrade_thread # Get ref before potentially setting to None
+    thread_to_join = STATE.autotrade_thread # Get ref before setting to None
     if thread_to_join and thread_to_join.is_alive():
         print("Waiting for auto-trading thread to stop...")
         thread_to_join.join(timeout=5.0) # Wait up to 5 seconds
