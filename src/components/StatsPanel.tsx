@@ -1,12 +1,7 @@
 import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
-
-const getBackendUrl = () => {
-    if (typeof window !== 'undefined') {
-        return `http://${window.location.hostname}:5000`;
-    }
-    return 'http://127.0.0.1:5000';
-};
+import { getBackendUrl } from '@/lib/utils'; // Import centralized URL getter
+import { socket } from '@/lib/socket'; // Import shared socket
 
 interface Stats {
     trades: number;
@@ -32,10 +27,11 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
             }
             setIsLoading(true);
             try {
+                // Fetch initial stats on component mount (or when credentials change)
                 const response = await fetch(`${getBackendUrl()}/api/get_daily_stats`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(credentials), // Pass credentials for the @mt5_required check
+                    body: JSON.stringify(credentials),
                 });
                 if (response.ok) {
                     const data = await response.json();
@@ -54,11 +50,19 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
         };
 
         fetchStats();
-        // Refresh stats every 30 seconds
-        const interval = setInterval(fetchStats, 30000);
 
-        return () => clearInterval(interval);
-    }, [credentials]);
+        // **REMOVED POLLING**: Set up socket listener for real-time updates
+        const handleStatsUpdate = (data: Stats) => {
+            setStats(data);
+        };
+        
+        socket.on('daily_stats_update', handleStatsUpdate);
+
+        // Clean up the listener when the component unmounts or credentials change
+        return () => {
+            socket.off('daily_stats_update', handleStatsUpdate);
+        };
+    }, [credentials]); // Re-run effect if credentials change
 
     const getPnlColor = (pnl: number) => {
         if (pnl > 0) return 'text-green-400';
@@ -68,7 +72,7 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
 
     const renderContent = () => {
         if (isLoading) {
-            return <p className="text-gray-400 text-center">Loading stats...</p>;
+            return <p className="text-gray-400 text-center animate-pulse">Loading stats...</p>;
         }
         if (!stats || stats.trades === 0) {
             return <p className="text-gray-500 text-center">No closed trades found for today.</p>;
