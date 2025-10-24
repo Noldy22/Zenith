@@ -2,44 +2,15 @@
 
 import { createChart, ColorType, CrosshairMode, ISeriesApi, IPriceLine, LineStyle, IChartApi, Time, UTCTimestamp, BusinessDay, SeriesMarker, SeriesMarkerPosition, LogicalRange } from 'lightweight-charts';
 import React, { useEffect, useRef } from 'react';
-import { CandlestickData } from '@/lib/alphaVantage';
+import { CandlestickData } from '../lib/alphaVantage'; // Adjusted path
 
-interface Zone {
-    high: number;
-    low: number;
-    time: Time;
-}
-
-interface LiquidityPoint {
-    time: Time;
-    price: number;
-}
-
-interface Divergence {
-    type: 'Bullish' | 'Bearish';
-    time: Time;
-    price: number;
-}
-
-interface EmaCross {
-    type: 'Golden Cross' | 'Death Cross';
-    time: Time;
-    price: number;
-}
-
-interface Suggestion {
-    action: 'Buy' | 'Sell' | 'Neutral';
-    entry: number | null;
-    sl: number | null;
-    tp: number | null;
-}
-
-interface CandlestickPattern {
-    name: string;
-    time: Time;
-    position: 'above' | 'below';
-    price: number;
-}
+// Interface definitions remain the same...
+interface Zone { high: number; low: number; time: Time; }
+interface LiquidityPoint { time: Time; price: number; }
+interface Divergence { type: 'Bullish' | 'Bearish'; time: Time; price: number; }
+interface EmaCross { type: 'Golden Cross' | 'Death Cross'; time: Time; price: number; }
+interface Suggestion { action: 'Buy' | 'Sell' | 'Neutral'; entry: number | null; sl: number | null; tp: number | null; }
+interface CandlestickPattern { name: string; time: Time; position: 'above' | 'below'; price: number; }
 
 export const TradingChart = (props: {
     data: CandlestickData[];
@@ -47,8 +18,8 @@ export const TradingChart = (props: {
     onSeriesReady: (series: ISeriesApi<"Candlestick">) => void;
     supportLevels?: number[];
     resistanceLevels?: number[];
-    demandZones?: Zone[];
-    supplyZones?: Zone[];
+    demandZones?: Zone[]; // Already present
+    supplyZones?: Zone[]; // Already present
     bullishOBs?: Zone[];
     bearishOBs?: Zone[];
     bullishFVGs?: Zone[];
@@ -57,14 +28,15 @@ export const TradingChart = (props: {
     sellSideLiquidity?: LiquidityPoint[];
     suggestion?: Suggestion;
     candlestickPatterns?: CandlestickPattern[];
-    rsiDivergences?: Divergence[]; // <-- This was missing in repo
-    emaCrosses?: EmaCross[];       // <-- This was missing in repo
+    rsiDivergences?: Divergence[];
+    emaCrosses?: EmaCross[];
 }) => {
     const {
         data, onChartReady, onSeriesReady, supportLevels, resistanceLevels,
-        demandZones, supplyZones, bullishOBs, bearishOBs,
+        demandZones, supplyZones, // Keep these
+        bullishOBs, bearishOBs,
         bullishFVGs, bearishFVGs, buySideLiquidity, sellSideLiquidity,
-        suggestion, candlestickPatterns, rsiDivergences, emaCrosses // <-- Added missing props
+        suggestion, candlestickPatterns, rsiDivergences, emaCrosses
     } = props;
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -99,10 +71,9 @@ export const TradingChart = (props: {
         if (data.length > 0) {
             candlestickSeries.setData(data);
 
-            // Set a comfortable default zoom (last 100 bars)
             const lastBarIndex = data.length - 1;
-            const firstVisibleIndex = Math.max(0, lastBarIndex - 100); 
-            
+            const firstVisibleIndex = Math.max(0, lastBarIndex - 100);
+
             chart.timeScale().setVisibleLogicalRange({
                 from: firstVisibleIndex,
                 to: lastBarIndex
@@ -133,7 +104,7 @@ export const TradingChart = (props: {
                 const timeScale = chart.timeScale();
                 const visibleRange = timeScale.getVisibleLogicalRange();
                 if (!visibleRange || data.length === 0) return;
-                
+
                 const lastDataIndex = data.length - 1;
                 const lastDataTime = data[lastDataIndex].time;
 
@@ -141,44 +112,52 @@ export const TradingChart = (props: {
                     const topY = candlestickSeries.priceToCoordinate(zone.high);
                     const bottomY = candlestickSeries.priceToCoordinate(zone.low);
                     const startX = timeScale.timeToCoordinate(zone.time);
+                    // Extend zone to the end of the chart data
                     const endX = timeScale.timeToCoordinate(lastDataTime);
 
                     if (startX === null || endX === null || topY === null || bottomY === null) return;
 
-                    if (startX <= endX) {
-                      ctx.fillStyle = color;
-                      ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+                    // Ensure startX is not beyond endX, and coordinates are within chart bounds
+                    const visibleEndX = Math.min(endX, chartWidth); // Don't draw past chart edge
+                    if (startX <= visibleEndX && startX < chartWidth && topY < chartHeight && bottomY > 0) {
+                        ctx.fillStyle = color;
+                        // Clip drawing to visible chart area horizontally
+                        const drawStartX = Math.max(startX, 0);
+                        const drawWidth = visibleEndX - drawStartX;
+                        if (drawWidth > 0) {
+                           ctx.fillRect(drawStartX, topY, drawWidth, bottomY - topY);
+                        }
                     }
                 };
-            
-                // --- FIX: ADDED DRAW LOGIC FOR SUPPLY/DEMAND ZONES ---
-                supplyZones?.forEach(zone => drawZone(zone, 'rgba(239, 83, 80, 0.2)')); // Red for Supply
-                demandZones?.forEach(zone => drawZone(zone, 'rgba(38, 166, 154, 0.2)')); // Green for Demand
 
-                // Draw Bullish and Bearish Order Blocks
-                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal for Bullish OB
-                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red for Bearish OB
+                // --- MODIFICATION START: Draw Supply/Demand Zones ---
+                // Draw Supply Zones (Red, slightly transparent)
+                supplyZones?.forEach(zone => drawZone(zone, 'rgba(239, 83, 80, 0.15)')); // Slightly transparent red
+                // Draw Demand Zones (Green, slightly transparent)
+                demandZones?.forEach(zone => drawZone(zone, 'rgba(38, 166, 154, 0.15)')); // Slightly transparent green
+                // --- MODIFICATION END ---
 
-                // Also draw FVGs for diagnosis
-                bullishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(0, 150, 255, 0.2)')); // Blue for Bullish FVG
-                bearishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(128, 0, 128, 0.2)')); // Purple for Bearish FVG
+                // Draw Order Blocks (using existing colors, slightly more opaque for distinction if needed)
+                bullishOBs?.forEach(ob => drawZone(ob, 'rgba(38, 166, 154, 0.2)')); // Teal
+                bearishOBs?.forEach(ob => drawZone(ob, 'rgba(239, 83, 80, 0.2)')); // Red
+
+                // Draw FVGs
+                bullishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(0, 150, 255, 0.15)')); // Blue
+                bearishFVGs?.forEach(fvg => drawZone(fvg, 'rgba(128, 0, 128, 0.15)')); // Purple
+
             } catch (e) {
                 console.warn("Could not draw rectangles.", e);
             }
         };
 
-        // --- MARKERS & LINES ---
+        // --- MARKERS & LINES (No changes needed here) ---
         const drawVisuals = () => {
-            // Clear old visuals
             priceLines.forEach(line => candlestickSeries.removePriceLine(line));
             priceLines.length = 0;
             candlestickSeries.setMarkers([]);
 
-            // Draw Liquidity Markers
             const timeToMillis = (t: Time): number => {
-                if (typeof t === 'number') {
-                    return t * 1000;
-                }
+                if (typeof t === 'number') return t * 1000;
                 const bd = t as BusinessDay;
                 return Date.UTC(bd.year, bd.month - 1, bd.day);
             };
@@ -186,11 +165,10 @@ export const TradingChart = (props: {
             const bslMarkers: SeriesMarker<Time>[] = (buySideLiquidity || []).map(l => ({ time: l.time, position: 'aboveBar' as SeriesMarkerPosition, color: '#32CD32', shape: 'circle', size: 1, text: 'BSL' }));
             const sslMarkers: SeriesMarker<Time>[] = (sellSideLiquidity || []).map(l => ({ time: l.time, position: 'belowBar' as SeriesMarkerPosition, color: '#FF4500', shape: 'circle', size: 1, text: 'SSL' }));
 
-            // --- FIX: Correctly process RSI and EMA markers ---
             const rsiDivMarkers: SeriesMarker<Time>[] = (rsiDivergences || []).map(d => ({
                 time: d.time,
                 position: d.type === 'Bearish' ? 'aboveBar' : 'belowBar',
-                color: d.type === 'Bearish' ? '#FF00FF' : '#00FFFF', 
+                color: d.type === 'Bearish' ? '#FF00FF' : '#00FFFF',
                 shape: d.type === 'Bearish' ? 'arrowDown' : 'arrowUp',
                 text: d.type.substring(0, 4) + ' Div'
             }));
@@ -202,28 +180,18 @@ export const TradingChart = (props: {
                 shape: 'circle',
                 text: c.type
             }));
-            // --- END FIX ---
 
-            // --- Pattern Prioritization Logic ---
             const patternPriority: { [key: string]: number } = {
-                'ENGULFING': 1,
-                'HAMMER': 2, 'HANGINGMAN': 2, 'SHOOTINGSTAR': 2,
+                'ENGULFING': 1, 'HAMMER': 2, 'HANGINGMAN': 2, 'SHOOTINGSTAR': 2,
                 'MORNINGSTAR': 3, 'EVENINGSTAR': 3,
             };
-            
             const processedPatterns: { [key: string]: CandlestickPattern } = {};
-
             (candlestickPatterns || []).forEach(p => {
                 const timeKey = JSON.stringify(p.time);
                 const existing = processedPatterns[timeKey];
-                
                 const patternBaseName = p.name.replace('B_', '').replace('S_', '');
                 const currentPriority = patternPriority[patternBaseName] || 99;
-
-                if (!patternPriority[patternBaseName]) {
-                    return;
-                }
-
+                if (!patternPriority[patternBaseName]) return;
                 if (!existing) {
                     processedPatterns[timeKey] = { ...p, name: patternBaseName };
                 } else {
@@ -234,7 +202,6 @@ export const TradingChart = (props: {
                     }
                 }
             });
-
             const patternMarkers: SeriesMarker<Time>[] = Object.values(processedPatterns).map(p => ({
                 time: p.time,
                 position: (p.position === 'above' ? 'aboveBar' : 'belowBar') as SeriesMarkerPosition,
@@ -243,22 +210,19 @@ export const TradingChart = (props: {
                 text: p.name.substring(0, 10)
             }));
 
-            // --- FIX: Add new markers to the allMarkers array ---
             const allMarkers = [...bslMarkers, ...sslMarkers, ...patternMarkers, ...rsiDivMarkers, ...emaCrossMarkers].sort((a, b) => timeToMillis(a.time) - timeToMillis(b.time));
             candlestickSeries.setMarkers(allMarkers);
 
-            // Draw Suggestion Lines
             if (suggestion && suggestion.action !== 'Neutral' && suggestion.entry && suggestion.sl && suggestion.tp) {
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.entry, color: '#FFFFFF', lineWidth: 2, lineStyle: LineStyle.Solid, title: 'Entry' }));
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.sl, color: '#ef5350', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Stop Loss' }));
                 priceLines.push(candlestickSeries.createPriceLine({ price: suggestion.tp, color: '#26a69a', lineWidth: 2, lineStyle: LineStyle.Dashed, title: 'Take Profit' }));
             }
 
-            // Draw rectangles on the canvas
-            drawRectangles();
+            drawRectangles(); // Draw rectangles after markers/lines
         };
 
-        drawVisuals();
+        drawVisuals(); // Initial draw
 
         // --- 3. EVENT LISTENERS ---
         const handleResize = () => {
@@ -266,27 +230,30 @@ export const TradingChart = (props: {
                 width: chartContainerRef.current?.clientWidth,
                 height: chartContainerRef.current?.clientHeight,
             });
+            // Need to redraw rectangles on resize as coordinates change
             drawRectangles();
         };
 
-        chart.timeScale().subscribeVisibleTimeRangeChange(drawRectangles);
+        // Redraw rectangles whenever the visible time range changes (pan/zoom)
+        chart.timeScale().subscribeVisibleLogicalRangeChange(drawRectangles);
         window.addEventListener('resize', handleResize);
 
         // --- 4. CLEANUP ---
         return () => {
             window.removeEventListener('resize', handleResize);
-            chart.timeScale().unsubscribeVisibleTimeRangeChange(drawRectangles);
+            chart.timeScale().unsubscribeVisibleLogicalRangeChange(drawRectangles);
             chart.remove();
             if (chartContainerRef.current && canvas.parentNode === chartContainerRef.current) {
                 chartContainerRef.current.removeChild(canvas);
             }
         };
 
+    // Dependency array includes demandZones and supplyZones now
     }, [
         data, supportLevels, resistanceLevels, demandZones, supplyZones,
         bullishOBs, bearishOBs, bullishFVGs, bearishFVGs,
         buySideLiquidity, sellSideLiquidity, suggestion, candlestickPatterns,
-        rsiDivergences, emaCrosses, // <-- FIX: Add to dependency array
+        rsiDivergences, emaCrosses,
         onChartReady, onSeriesReady
     ]);
 

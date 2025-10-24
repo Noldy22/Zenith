@@ -1,36 +1,36 @@
 "use client";
-import { useAnalysis } from '@/hooks/useAnalysis';
-import { TradingChart } from "@/components/TradingChart";
-// --- MODIFIED IMPORT ---
-import ChartAnimation from "@/components/ChartAnimation"; // Use the new animation
-import SymbolSearch from "@/components/SymbolSearch";
-import Chat from "@/components/Chat";
-import { CandlestickData } from "@/lib/alphaVantage";
+// Adjusted imports to use relative paths
+import { useAnalysis } from '../../hooks/useAnalysis';
+import { TradingChart } from "../../components/TradingChart";
+import ScanningLineAnimation from "../../components/ScanningLineAnimation"; // Use the new animation
+import SymbolSearch from "../../components/SymbolSearch";
+import Chat from "../../components/Chat";
+import { CandlestickData } from "../../lib/alphaVantage"; // Adjusted path
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { ISeriesApi, Time, IChartApi } from "lightweight-charts";
-import { useAlert } from '@/context/AlertContext';
+import type { ISeriesApi, Time, IChartApi, CandlestickData as LightweightCandlestickData } from "lightweight-charts"; // Import LightweightCandlestickData
+import { useAlert } from '../../context/AlertContext'; // Adjusted path
 import { io, Socket } from "socket.io-client";
 
-// --- UI Component Imports ---
-import { Button } from '@/components/ui/button';
-import { 
-  Card, 
-  CardContent, 
-  CardHeader, 
+// --- UI Component Imports (using relative paths) ---
+import { Button } from '../../components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardHeader,
   CardTitle,
   CardDescription,
   CardFooter
-} from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
+} from '../../components/ui/card';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { Switch } from '../../components/ui/switch';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "../../components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -39,11 +39,11 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "@/components/ui/dialog";
+} from "../../components/ui/dialog";
 
-// --- Core Imports ---
-import { getBackendUrl } from '@/lib/utils';
-import { timeframes, AnalysisResult } from '@/lib/types';
+// --- Core Imports (using relative paths) ---
+import { getBackendUrl } from '../../lib/utils';
+import { timeframes, AnalysisResult } from '../../lib/types'; // Adjusted path
 import { LogIn, LogOut, Settings, Bot, Zap } from 'lucide-react'; // Import icons
 
 const brokerPaths = {
@@ -54,7 +54,7 @@ const brokerPaths = {
 
 export default function ChartsPage() {
   const { showAlert } = useAlert();
-  
+
   // Chart and Data State
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -65,7 +65,7 @@ export default function ChartsPage() {
   const [series, setSeries] = useState<ISeriesApi<'Candlestick'> | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  
+
   // UI State
   const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
@@ -74,7 +74,7 @@ export default function ChartsPage() {
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
-  
+
   // Auto-Trading State
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
@@ -111,9 +111,14 @@ export default function ChartsPage() {
         }
         return res.json();
     })
-    .then(data => { 
+    .then(data => {
         console.log(`[CHARTS] Fetched ${data.length} bars for ${activeSymbol}`);
-        setChartData(data); 
+        // Ensure data format matches Lightweight Charts expectation
+        const formattedData = data.map((d: any) => ({
+          ...d,
+          time: d.time as Time // Assert type Time
+        }));
+        setChartData(formattedData);
     })
     .catch(error => {
       console.error("[CHARTS] Error fetching chart data:", error);
@@ -133,7 +138,7 @@ export default function ChartsPage() {
                 setMt5Password(credentials.password);
                 setMt5Server(credentials.server);
                 setMt5TerminalPath(credentials.terminal_path);
-                
+
                 const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -159,7 +164,7 @@ export default function ChartsPage() {
   }, []);
 
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);
-  
+
   useEffect(() => {
     if (isConnected) {
         socketRef.current = io(getBackendUrl());
@@ -175,8 +180,10 @@ export default function ChartsPage() {
             }
         });
         socketRef.current.on('new_bar', (bar: CandlestickData) => {
+            // Ensure bar format matches Lightweight Charts expectation
+            const formattedBar = { ...bar, time: bar.time as Time };
             if (seriesRef.current) {
-                seriesRef.current.update(bar);
+                seriesRef.current.update(formattedBar as LightweightCandlestickData<'Candlestick'>);
             }
         });
         socketRef.current.on('training_complete', (data) => {
@@ -231,7 +238,7 @@ export default function ChartsPage() {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Failed to connect.');
-        
+
         const newSymbols: string[] = result;
         localStorage.setItem('mt5_credentials', JSON.stringify(credentials));
         setSymbols(newSymbols);
@@ -286,7 +293,7 @@ export default function ChartsPage() {
       showAlert(`Trade failed: ${error.message}`, 'error');
     } finally { setIsTrading(false); }
   };
-  
+
   const handleToggleAutoTrade = async () => {
     setIsTogglingAutoTrade(true);
     const storedCreds = localStorage.getItem('mt5_credentials');
@@ -391,9 +398,9 @@ export default function ChartsPage() {
             <DialogClose asChild>
               <Button type="button" variant="secondary">Cancel</Button>
             </DialogClose>
-            <Button 
-              type="submit" 
-              onClick={handleToggleAutoTrade} 
+            <Button
+              type="submit"
+              onClick={handleToggleAutoTrade}
               disabled={isTogglingAutoTrade || isLoading}
               variant={isAutoTrading ? "destructive" : "default"}
             >
@@ -417,13 +424,13 @@ export default function ChartsPage() {
                   <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                   <span className={`${isConnected ? 'text-green-400' : 'text-red-400'}`}>{isConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
-                
+
                 {isConnected ? (
                   <Button variant="destructive" onClick={handleDisconnect}><LogOut className="w-4 h-4 mr-2" />Disconnect</Button>
                 ) : (
                   <Button onClick={() => setIsConnectModalOpen(true)}><LogIn className="w-4 h-4 mr-2" />Connect MT5</Button>
                 )}
-                
+
                 <Select onValueChange={(value) => setActiveTimeframe(value)} value={activeTimeframe}>
                   <SelectTrigger className="w-[100px]">
                     <SelectValue placeholder="Timeframe" />
@@ -442,14 +449,26 @@ export default function ChartsPage() {
               </div>
             </CardContent>
           </Card>
-          
+
           <h1 className="text-3xl font-bold text-center">{activeSymbol} Chart</h1>
 
           <Card className="h-[450px] p-0">
+            {/* --- Added Breathing Effect Overlay --- */}
             <div className="relative rounded-md overflow-hidden h-full w-full">
-              {/* --- HERE IS THE CHANGE --- */}
-              <ChartAnimation isAnalyzing={isAnalyzing} />
-              
+              {/* Breathing Overlay */}
+              {isAnalyzing && (
+                <div className="absolute inset-0 bg-primary/10 animate-pulse pointer-events-none z-[9]"></div>
+              )}
+
+              {/* Scanning Line Animation (z-index 10 & 11) */}
+              <ScanningLineAnimation
+                 chart={chart}
+                 series={series}
+                 isAnalyzing={isAnalyzing}
+                 candleData={chartData}
+              />
+
+              {/* Chart Component */}
               {isLoading ? (
                 <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
               ) : chartData.length > 0 ? (
@@ -475,7 +494,7 @@ export default function ChartsPage() {
               )}
             </div>
           </Card>
-          
+
           {/* Chat Section */}
           <div className="h-[400px]">
              {analysisResult && <Chat analysisContext={analysisResult} />}
@@ -498,7 +517,7 @@ export default function ChartsPage() {
               <div className="flex-grow overflow-y-auto">
                 {isAnalyzing && (
                   <div className="text-center p-4">
-                    <p className="text-lg text-primary font-semibold animate-pulse">{analysisProgress}</p>
+                    <p className="text-lg text-primary font-semibold animate-pulse">{analysisProgress || 'Analyzing...'}</p>
                     <p className="text-sm text-muted-foreground mt-2">Please wait, AI is at work...</p>
                   </div>
                 )}
