@@ -322,6 +322,89 @@ export default function ChartsPage() {
     } finally { setIsTogglingAutoTrade(false); }
   };
 
+  // Helper component to render analysis content (used in two places)
+  const AnalysisContent = () => (
+    <>
+      {isAnalyzing && !analysisResult && (
+        <div className="text-center p-4">
+          <p className="text-lg text-primary font-semibold animate-pulse">{analysisProgress || 'Analyzing...'}</p>
+          <p className="text-sm text-muted-foreground mt-2">Please wait, AI is at work...</p>
+        </div>
+      )}
+      {analysisResult && (
+        <div className="space-y-4 text-sm p-6 pt-0 lg:p-0 lg:pt-0"> {/* Adjusted padding */}
+           {analysisResult.predicted_success_rate && (
+               <div>
+                   <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
+                   <p className="font-semibold text-lg text-white">{analysisResult.predicted_success_rate}</p>
+               </div>
+           )}
+           <div>
+               <h3 className="font-bold text-lg text-muted-foreground">Confidence</h3>
+               <p className={`font-semibold text-2xl ${
+                   analysisResult.confidence > 75 ? 'text-green-400'
+                   : analysisResult.confidence >= 50 ? 'text-yellow-400'
+                   : 'text-red-400'
+               }`}>
+                   {analysisResult.confidence.toFixed(0)}%
+               </p>
+           </div>
+           <div>
+               <h3 className="font-bold text-lg text-primary">Trade Rationale</h3>
+               <p className="text-muted-foreground">{analysisResult.suggestion.reason}</p>
+           </div>
+           <div className="space-y-3">
+               <h3 className="font-bold text-lg text-blue-300">{analysisResult.narrative.overview}</h3>
+               <div>
+                   <p className="font-semibold text-foreground">{analysisResult.narrative.structure_title}</p>
+                   <p className="text-muted-foreground italic">{analysisResult.narrative.structure_body}</p>
+               </div>
+               <div>
+                   <p className="font-semibold text-foreground">{analysisResult.narrative.levels_title}</p>
+                   <ul className="list-disc list-inside text-muted-foreground italic">
+                       {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
+                   </ul>
+               </div>
+           </div>
+           {analysisResult.suggestion.action !== 'Neutral' && (
+               <div className="mt-6 border-t border-border pt-4">
+                   <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>
+                   <div className="space-y-3">
+                       <div>
+                           <Label htmlFor="lot-size-manual">Lot Size</Label>
+                           <Input id="lot-size-manual" type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} />
+                       </div>
+                       <div>
+                           <Label htmlFor="sl-manual">Stop Loss (Price)</Label>
+                           <Input id="sl-manual" type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" />
+                       </div>
+                       <div>
+                           <Label htmlFor="tp-manual">Take Profit (Price)</Label>
+                           <Input id="tp-manual" type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" />
+                       </div>
+                       <div className="flex gap-x-2">
+                           <Button onClick={() => handleManualTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 bg-green-600 hover:bg-green-700 font-bold">
+                             {isTrading ? 'Placing...' : 'BUY'}
+                           </Button>
+                           <Button onClick={() => handleManualTrade('SELL')} disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} className="flex-1 bg-red-600 hover:bg-red-700 font-bold">
+                             {isTrading ? 'Placing...' : 'SELL'}
+                           </Button>
+                       </div>
+                   </div>
+               </div>
+           )}
+        </div>
+      )}
+      {/* Placeholder shown only on LG+ when no results */}
+      {!analysisResult && !isAnalyzing && (
+         <div className="hidden lg:flex flex-col items-center justify-center text-center text-muted-foreground flex-grow">
+           <p>{isConnected ? 'Click "Analyze" above to get AI insights.' : 'Connect your MT5 account to begin.'}</p>
+         </div>
+      )}
+    </>
+  );
+
+
   return (
     <main className="p-4 sm:p-6 lg:p-8">
       {/* MT5 Connect Modal */}
@@ -412,63 +495,69 @@ export default function ChartsPage() {
 
       {/* Main Page Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Left Column (Chart & Controls) */}
+        {/* Left Column (Chart, Controls, Mobile Analysis, Chat) */}
         <div className="lg:col-span-2 space-y-4">
           <Card>
-            <CardContent className="p-4 flex flex-wrap items-center justify-between gap-4">
-              <div className="w-full sm:w-auto flex-grow sm:flex-grow-0">
-                <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
+            {/* --- Top Controls Card --- */}
+            <CardContent className="p-4 flex flex-col sm:flex-row flex-wrap items-center justify-between gap-4">
+              {/* Instrument & Timeframe (Order 2 on mobile, Order 1 on sm+) */}
+              <div className="w-full sm:w-auto flex items-center gap-2 order-2 sm:order-1">
+                 <div className="flex-grow">
+                   <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
+                 </div>
+                 <Select onValueChange={(value) => setActiveTimeframe(value)} value={activeTimeframe}>
+                    <SelectTrigger className="w-[100px]">
+                      <SelectValue placeholder="Timeframe" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.keys(timeframes).map((tfKey) => (
+                        <SelectItem key={tfKey} value={tfKey}>{tfKey}</SelectItem>
+                      ))}
+                    </SelectContent>
+                 </Select>
               </div>
-              <div className="flex items-center gap-2">
+
+              {/* Connection Status & Buttons (Order 1 on mobile, Order 2 on sm+) */}
+              <div className="w-full sm:w-auto flex flex-wrap items-center justify-between sm:justify-start gap-2 order-1 sm:order-2">
                 <div className={`flex items-center gap-2 border px-3 py-2 rounded-md text-sm ${isConnected ? 'border-green-500/50' : 'border-red-500/50'}`}>
                   <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                   <span className={`${isConnected ? 'text-green-400' : 'text-red-400'}`}>{isConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
 
                 {isConnected ? (
-                  <Button variant="destructive" onClick={handleDisconnect}><LogOut className="w-4 h-4 mr-2" />Disconnect</Button>
+                  <Button variant="destructive" size="sm" onClick={handleDisconnect}><LogOut className="w-4 h-4 mr-1 sm:mr-2" />Disconnect</Button>
                 ) : (
-                  <Button onClick={() => setIsConnectModalOpen(true)}><LogIn className="w-4 h-4 mr-2" />Connect MT5</Button>
+                  <Button size="sm" onClick={() => setIsConnectModalOpen(true)}><LogIn className="w-4 h-4 mr-1 sm:mr-2" />Connect MT5</Button>
                 )}
 
-                <Select onValueChange={(value) => setActiveTimeframe(value)} value={activeTimeframe}>
-                  <SelectTrigger className="w-[100px]">
-                    <SelectValue placeholder="Timeframe" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.keys(timeframes).map((tfKey) => (
-                      <SelectItem key={tfKey} value={tfKey}>{tfKey}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Button variant="secondary" onClick={() => setIsAutoTradeModalOpen(true)} disabled={!isConnected}>
-                  <Bot className="w-4 h-4 mr-2" />
+                <Button variant="secondary" size="sm" onClick={() => setIsAutoTradeModalOpen(true)} disabled={!isConnected}>
+                  <Bot className="w-4 h-4 mr-1 sm:mr-2" />
                   {isAutoTrading ? 'Auto-Trading...' : 'Auto-Trade'}
+                </Button>
+
+                {/* Analyze Button - Visible below lg screens */}
+                <Button size="sm" onClick={handleAnalysis} disabled={isAnalyzing || !isConnected} className="flex-grow sm:flex-grow-0 lg:hidden inline-flex">
+                  <Zap className="w-4 h-4 mr-1 sm:mr-2" />
+                  {isAnalyzing ? 'Analyzing...' : 'Analyze'}
                 </Button>
               </div>
             </CardContent>
+            {/* --- End Top Controls --- */}
           </Card>
 
           <h1 className="text-3xl font-bold text-center">{activeSymbol} Chart</h1>
 
           <Card className="h-[450px] p-0">
-            {/* --- Added Breathing Effect Overlay --- */}
             <div className="relative rounded-md overflow-hidden h-full w-full">
-              {/* Breathing Overlay */}
               {isAnalyzing && (
                 <div className="absolute inset-0 bg-primary/10 animate-pulse pointer-events-none z-[9]"></div>
               )}
-
-              {/* Scanning Line Animation (z-index 10 & 11) */}
               <ScanningLineAnimation
                  chart={chart}
                  series={series}
                  isAnalyzing={isAnalyzing}
                  candleData={chartData}
               />
-
-              {/* Chart Component */}
               {isLoading ? (
                 <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
               ) : chartData.length > 0 ? (
@@ -488,6 +577,8 @@ export default function ChartsPage() {
                   sellSideLiquidity={analysisResult?.sell_side_liquidity}
                   suggestion={analysisResult?.suggestion}
                   candlestickPatterns={analysisResult?.candlestick_patterns}
+                  // rsiDivergences={analysisResult?.rsi_divergence} // Pass if needed
+                  // emaCrosses={analysisResult?.ema_crosses} // Pass if needed
                 />
               ) : (
                 <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>
@@ -495,100 +586,46 @@ export default function ChartsPage() {
             </div>
           </Card>
 
-          {/* Chat Section */}
-          <div className="h-[400px]">
-             {analysisResult && <Chat analysisContext={analysisResult} />}
-          </div>
+          {/* --- MODIFICATION START: Conditional Mobile Analysis Card --- */}
+          {analysisResult && (
+            <Card className="block lg:hidden">
+              <CardHeader>
+                  {/* Intentionally blank or add a mobile-specific title */}
+              </CardHeader>
+              <CardContent className="p-0"> {/* Remove default padding */}
+                <AnalysisContent />
+              </CardContent>
+            </Card>
+          )}
+          {/* --- MODIFICATION END --- */}
+
+          {/* Chat Section - Render only if analysisResult exists */}
+          {analysisResult && (
+             <div className="h-[400px]">
+                <Chat analysisContext={analysisResult} />
+             </div>
+          )}
         </div>
 
-        {/* Right Column (Analysis & Controls) */}
-        <div className="lg:col-span-1 space-y-4">
+        {/* Right Column (Analysis & Controls - For Desktop View) */}
+        {/* --- MODIFICATION START: Hide entire card on mobile --- */}
+        <div className="lg:col-span-1 space-y-4 hidden lg:block">
+        {/* --- MODIFICATION END --- */}
           <Card className="flex flex-col min-h-[600px]">
             <CardHeader>
-              <CardTitle>Analysis & Controls</CardTitle>
+              {/* Title Removed */}
             </CardHeader>
             <CardContent className="flex-grow flex flex-col">
-              <div className="flex gap-2 mb-4">
+              {/* Analyze Button - Visible ONLY on lg screens and up */}
+              <div className="flex gap-2 mb-4"> {/* Removed hidden lg:flex, now always flex within this parent */}
                   <Button onClick={handleAnalysis} disabled={isAnalyzing || !isConnected} className="w-full">
                     <Zap className="w-4 h-4 mr-2" />
                     {isAnalyzing ? 'Analyzing...' : 'Analyze'}
                   </Button>
               </div>
+              {/* Analysis Content - Rendered via helper */}
               <div className="flex-grow overflow-y-auto">
-                {isAnalyzing && (
-                  <div className="text-center p-4">
-                    <p className="text-lg text-primary font-semibold animate-pulse">{analysisProgress || 'Analyzing...'}</p>
-                    <p className="text-sm text-muted-foreground mt-2">Please wait, AI is at work...</p>
-                  </div>
-                )}
-                {analysisResult && !isAnalyzing ? (
-                    <div className="space-y-4 text-sm">
-                        {analysisResult.predicted_success_rate && (
-                            <div>
-                                <h3 className="font-bold text-lg text-purple-400">Predicted Success Rate</h3>
-                                <p className="font-semibold text-lg text-white">{analysisResult.predicted_success_rate}</p>
-                            </div>
-                        )}
-                        <div>
-                            <h3 className="font-bold text-lg text-muted-foreground">Confidence</h3>
-                            <p className={`font-semibold text-2xl ${
-                                analysisResult.confidence > 75 ? 'text-green-400'
-                                : analysisResult.confidence >= 50 ? 'text-yellow-400'
-                                : 'text-red-400'
-                            }`}>
-                                {analysisResult.confidence.toFixed(0)}%
-                            </p>
-                        </div>
-                        <div>
-                            <h3 className="font-bold text-lg text-primary">Trade Rationale</h3>
-                            <p className="text-muted-foreground">{analysisResult.suggestion.reason}</p>
-                        </div>
-                        <div className="space-y-3">
-                            <h3 className="font-bold text-lg text-blue-300">{analysisResult.narrative.overview}</h3>
-                            <div>
-                                <p className="font-semibold text-foreground">{analysisResult.narrative.structure_title}</p>
-                                <p className="text-muted-foreground italic">{analysisResult.narrative.structure_body}</p>
-                            </div>
-                            <div>
-                                <p className="font-semibold text-foreground">{analysisResult.narrative.levels_title}</p>
-                                <ul className="list-disc list-inside text-muted-foreground italic">
-                                    {analysisResult.narrative.levels_body && analysisResult.narrative.levels_body.map((item, index) => <li key={index}>{item}</li>)}
-                                </ul>
-                            </div>
-                        </div>
-                        {analysisResult.suggestion.action !== 'Neutral' && (
-                            <div className="mt-6 border-t border-border pt-4">
-                                <h3 className="font-bold text-lg text-white mb-2">Manual Trade Execution</h3>
-                                <div className="space-y-3">
-                                    <div>
-                                        <Label htmlFor="lot-size-manual">Lot Size</Label>
-                                        <Input id="lot-size-manual" type="number" value={lotSize} onChange={(e) => setLotSize(e.target.value)} />
-                                    </div>
-                                    <div>
-                                        <Label htmlFor="sl-manual">Stop Loss (Price)</Label>
-                                        <Input id="sl-manual" type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="Auto-populated by AI" />
-                                    </div>
-                                    <div>
-                                        <Label htmlFor="tp-manual">Take Profit (Price)</Label>
-                                        <Input id="tp-manual" type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="Auto-populated by AI" />
-                                    </div>
-                                    <div className="flex gap-x-2">
-                                        <Button onClick={() => handleManualTrade('BUY')} disabled={isTrading || analysisResult.suggestion.action !== 'Buy'} className="flex-1 bg-green-600 hover:bg-green-700 font-bold">
-                                          {isTrading ? 'Placing...' : 'BUY'}
-                                        </Button>
-                                        <Button onClick={() => handleManualTrade('SELL')} disabled={isTrading || analysisResult.suggestion.action !== 'Sell'} className="flex-1 bg-red-600 hover:bg-red-700 font-bold">
-                                          {isTrading ? 'Placing...' : 'SELL'}
-                                        </Button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                ) : (
-                    <div className="text-center text-muted-foreground mt-10">
-                        <p>{isConnected ? 'Click "Analyze" to get AI insights.' : 'Connect your MT5 account to begin.'}</p>
-                    </div>
-                )}
+                 <AnalysisContent />
               </div>
             </CardContent>
           </Card>
