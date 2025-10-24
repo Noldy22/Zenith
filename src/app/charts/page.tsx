@@ -43,8 +43,10 @@ import {
 
 // --- Core Imports (using relative paths) ---
 import { getBackendUrl } from '../../lib/utils';
-import { timeframes, AnalysisResult } from '../../lib/types'; // Adjusted path
-import { LogIn, LogOut, Settings, Bot, Zap } from 'lucide-react'; // Import icons
+// FIX: Changed AppSettings to Settings
+import { timeframes, AnalysisResult, Settings } from '../../lib/types';
+import { LogIn, LogOut, Settings as SettingsIcon, Bot, Zap } from 'lucide-react'; // Renamed Settings icon import
+import { useAppSettings } from '@/hooks/useAppSettings'; // Import useAppSettings
 
 const brokerPaths = {
   'Exness': 'C:\\Program Files\\MetaTrader 5 EXNESS\\terminal64.exe',
@@ -54,11 +56,13 @@ const brokerPaths = {
 
 export default function ChartsPage() {
   const { showAlert } = useAlert();
+  // --- Use App Settings Hook ---
+  const { settings, isLoading: settingsLoading, isSaving: settingsSaving, saveSettings } = useAppSettings();
 
   // Chart and Data State
   const [chartData, setChartData] = useState<CandlestickData[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingChart, setIsLoadingChart] = useState(false); // Renamed isLoading
   const [activeSymbol, setActiveSymbol] = useState('EURUSD');
   const [activeTimeframe, setActiveTimeframe] = useState('1H');
   const [chart, setChart] = useState<IChartApi | null>(null);
@@ -67,19 +71,12 @@ export default function ChartsPage() {
   const socketRef = useRef<Socket | null>(null);
 
   // UI State
-  const [isAutoTradeModalOpen, setIsAutoTradeModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const { isAnalyzing, analysisResult, analysisProgress, performAnalysis, clearAnalysis, setAnalysisProgress } = useAnalysis();
   const [lotSize, setLotSize] = useState('0.01');
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
   const [isTrading, setIsTrading] = useState(false);
-
-  // Auto-Trading State
-  const [isAutoTrading, setIsAutoTrading] = useState(false);
-  const [isTogglingAutoTrade, setIsTogglingAutoTrade] = useState(false);
-  const [autoTradeLotSize, setAutoTradeLotSize] = useState('0.01');
-  const [confidenceThreshold, setConfidenceThreshold] = useState('75');
 
   // MT5 Connection State
   const [isConnected, setIsConnected] = useState(false);
@@ -90,12 +87,15 @@ export default function ChartsPage() {
   const [mt5TerminalPath, setMt5TerminalPath] = useState(brokerPaths['Exness']);
   const [brokerSelection, setBrokerSelection] = useState<keyof typeof brokerPaths>('Exness');
 
+  // Derive auto-trade status for the current symbol
+  const isAutoTradingSymbol = settings.auto_trading_enabled && settings.pairs_to_trade.includes(activeSymbol);
+
   const fetchChartData = useCallback(() => {
-    setIsLoading(true);
+    setIsLoadingChart(true); // Use renamed state
     clearAnalysis();
     const storedCreds = localStorage.getItem('mt5_credentials');
     if (!storedCreds) {
-      setIsLoading(false);
+      setIsLoadingChart(false);
       return;
     }
     const credentials = JSON.parse(storedCreds);
@@ -113,10 +113,9 @@ export default function ChartsPage() {
     })
     .then(data => {
         console.log(`[CHARTS] Fetched ${data.length} bars for ${activeSymbol}`);
-        // Ensure data format matches Lightweight Charts expectation
         const formattedData = data.map((d: any) => ({
           ...d,
-          time: d.time as Time // Assert type Time
+          time: d.time as Time
         }));
         setChartData(formattedData);
     })
@@ -125,7 +124,7 @@ export default function ChartsPage() {
       showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
-    .finally(() => setIsLoading(false));
+    .finally(() => setIsLoadingChart(false)); // Use renamed state
   }, [activeSymbol, activeTimeframe, showAlert, clearAnalysis]);
 
   useEffect(() => {
@@ -180,7 +179,6 @@ export default function ChartsPage() {
             }
         });
         socketRef.current.on('new_bar', (bar: CandlestickData) => {
-            // Ensure bar format matches Lightweight Charts expectation
             const formattedBar = { ...bar, time: bar.time as Time };
             if (seriesRef.current) {
                 seriesRef.current.update(formattedBar as LightweightCandlestickData<'Candlestick'>);
@@ -294,35 +292,47 @@ export default function ChartsPage() {
     } finally { setIsTrading(false); }
   };
 
-  const handleToggleAutoTrade = async () => {
-    setIsTogglingAutoTrade(true);
-    const storedCreds = localStorage.getItem('mt5_credentials');
-    if (!storedCreds) {
-        showAlert('Credentials not found. Please connect your account first.', 'error');
-        setIsTogglingAutoTrade(false); return;
+  const handleToggleAutoTradeForSymbol = async () => {
+    if (!isConnected) {
+      showAlert('Please connect to MT5 first.', 'error');
+      return;
     }
-    const endpoint = isAutoTrading ? '/api/stop_autotrade' : '/api/start_autotrade';
-    const body = isAutoTrading ? {} : {
-        ...JSON.parse(storedCreds), symbol: activeSymbol,
-        timeframe: timeframes[activeTimeframe as keyof typeof timeframes],
-        lot_size: autoTradeLotSize, confidence_threshold: confidenceThreshold,
-    };
-    try {
-        const response = await fetch(`${getBackendUrl()}${endpoint}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'Failed to toggle auto-trade.');
-        setIsAutoTrading(!isAutoTrading);
-        showAlert(result.message, 'success');
-        if (!isAutoTrading) setIsAutoTradeModalOpen(false);
-    } catch (error: any) {
-        showAlert(`Error: ${error.message}`, 'error');
-    } finally { setIsTogglingAutoTrade(false); }
+
+    const currentPairs = settings.pairs_to_trade || [];
+    let newPairs: string[];
+    let newAutoTradingEnabled = settings.auto_trading_enabled;
+
+    if (isAutoTradingSymbol) {
+      // --- Disable for this symbol ---
+      newPairs = currentPairs.filter(pair => pair !== activeSymbol);
+      if (newPairs.length === 0) {
+        newAutoTradingEnabled = false;
+        showAlert(`Auto-trading disabled for ${activeSymbol}. Global auto-trading stopped as no symbols are selected.`, 'info');
+      } else {
+        showAlert(`Auto-trading disabled for ${activeSymbol}.`, 'info');
+      }
+    } else {
+      // --- Enable for this symbol ---
+      if (!currentPairs.includes(activeSymbol)) {
+        newPairs = [...currentPairs, activeSymbol];
+      } else {
+        newPairs = currentPairs; // Already there, just ensure global is on
+      }
+      if (!newAutoTradingEnabled) {
+        newAutoTradingEnabled = true;
+        showAlert(`Auto-trading enabled for ${activeSymbol}. Global auto-trading started.`, 'success');
+      } else {
+         showAlert(`Auto-trading enabled for ${activeSymbol}.`, 'success');
+      }
+    }
+
+    const success = await saveSettings({
+      auto_trading_enabled: newAutoTradingEnabled,
+      pairs_to_trade: newPairs,
+    });
   };
 
-  // Helper component to render analysis content (used in two places)
+  // Helper component to render analysis content
   const AnalysisContent = () => (
     <>
       {isAnalyzing && !analysisResult && (
@@ -395,7 +405,6 @@ export default function ChartsPage() {
            )}
         </div>
       )}
-      {/* Placeholder shown only on LG+ when no results */}
       {!analysisResult && !isAnalyzing && (
          <div className="hidden lg:flex flex-col items-center justify-center text-center text-muted-foreground flex-grow">
            <p>{isConnected ? 'Click "Analyze" above to get AI insights.' : 'Connect your MT5 account to begin.'}</p>
@@ -409,7 +418,7 @@ export default function ChartsPage() {
     <main className="p-4 sm:p-6 lg:p-8">
       {/* MT5 Connect Modal */}
       <Dialog open={isConnectModalOpen} onOpenChange={setIsConnectModalOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>Connect MT5 Account</DialogTitle>
             <DialogDescription>
@@ -458,49 +467,14 @@ export default function ChartsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Auto-Trade Modal */}
-      <Dialog open={isAutoTradeModalOpen} onOpenChange={setIsAutoTradeModalOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Auto-Trade Settings</DialogTitle>
-            <DialogDescription>
-              Configure and activate AI auto-trading for {activeSymbol}.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="lot-size">Lot Size</Label>
-              <Input id="lot-size" type="number" value={autoTradeLotSize} onChange={(e) => setAutoTradeLotSize(e.target.value)} disabled={isAutoTrading} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="confidence">Min. Confidence (%)</Label>
-              <Input id="confidence" type="number" value={confidenceThreshold} onChange={(e) => setConfidenceThreshold(e.target.value)} disabled={isAutoTrading} />
-            </div>
-          </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="secondary">Cancel</Button>
-            </DialogClose>
-            <Button
-              type="submit"
-              onClick={handleToggleAutoTrade}
-              disabled={isTogglingAutoTrade || isLoading}
-              variant={isAutoTrading ? "destructive" : "default"}
-            >
-              {isTogglingAutoTrade ? 'Please wait...' : (isAutoTrading ? 'STOP AUTO-TRADING' : 'START AUTO-TRADING')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Main Page Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Left Column (Chart, Controls, Mobile Analysis, Chat) */}
         <div className="lg:col-span-2 space-y-4">
           <Card>
-            {/* --- Top Controls Card --- */}
+            {/* Top Controls Card */}
             <CardContent className="p-4 flex flex-col sm:flex-row flex-wrap items-center justify-between gap-4">
-              {/* Instrument & Timeframe (Order 2 on mobile, Order 1 on sm+) */}
+              {/* Instrument & Timeframe */}
               <div className="w-full sm:w-auto flex items-center gap-2 order-2 sm:order-1">
                  <div className="flex-grow">
                    <SymbolSearch symbols={symbols} onSymbolSelect={setActiveSymbol} initialSymbol={activeSymbol} />
@@ -516,33 +490,32 @@ export default function ChartsPage() {
                     </SelectContent>
                  </Select>
               </div>
-
-              {/* Connection Status & Buttons (Order 1 on mobile, Order 2 on sm+) */}
+              {/* Connection Status & Buttons */}
               <div className="w-full sm:w-auto flex flex-wrap items-center justify-between sm:justify-start gap-2 order-1 sm:order-2">
                 <div className={`flex items-center gap-2 border px-3 py-2 rounded-md text-sm ${isConnected ? 'border-green-500/50' : 'border-red-500/50'}`}>
                   <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                   <span className={`${isConnected ? 'text-green-400' : 'text-red-400'}`}>{isConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
-
                 {isConnected ? (
                   <Button variant="destructive" size="sm" onClick={handleDisconnect}><LogOut className="w-4 h-4 mr-1 sm:mr-2" />Disconnect</Button>
                 ) : (
                   <Button size="sm" onClick={() => setIsConnectModalOpen(true)}><LogIn className="w-4 h-4 mr-1 sm:mr-2" />Connect MT5</Button>
                 )}
-
-                <Button variant="secondary" size="sm" onClick={() => setIsAutoTradeModalOpen(true)} disabled={!isConnected}>
-                  <Bot className="w-4 h-4 mr-1 sm:mr-2" />
-                  {isAutoTrading ? 'Auto-Trading...' : 'Auto-Trade'}
+                <Button
+                  variant={isAutoTradingSymbol ? "default" : "secondary"}
+                  size="sm"
+                  onClick={handleToggleAutoTradeForSymbol}
+                  disabled={!isConnected || settingsLoading || settingsSaving}
+                >
+                  <Bot className={`w-4 h-4 mr-1 sm:mr-2 ${isAutoTradingSymbol ? 'text-green-400' : ''}`} />
+                  {isAutoTradingSymbol ? `Auto: ${activeSymbol}` : 'Auto-Trade'}
                 </Button>
-
-                {/* Analyze Button - Visible below lg screens */}
-                <Button size="sm" onClick={handleAnalysis} disabled={isAnalyzing || !isConnected} className="flex-grow sm:flex-grow-0 lg:hidden inline-flex">
+                <Button size="sm" onClick={handleAnalysis} disabled={isAnalyzing || !isConnected || settingsSaving} className="flex-grow sm:flex-grow-0 lg:hidden inline-flex">
                   <Zap className="w-4 h-4 mr-1 sm:mr-2" />
                   {isAnalyzing ? 'Analyzing...' : 'Analyze'}
                 </Button>
               </div>
             </CardContent>
-            {/* --- End Top Controls --- */}
           </Card>
 
           <h1 className="text-3xl font-bold text-center">{activeSymbol} Chart</h1>
@@ -558,7 +531,7 @@ export default function ChartsPage() {
                  isAnalyzing={isAnalyzing}
                  candleData={chartData}
               />
-              {isLoading ? (
+              {isLoadingChart ? (
                 <div className="flex justify-center items-center h-full"><p className="text-gray-400">Loading chart data...</p></div>
               ) : chartData.length > 0 ? (
                 <TradingChart
@@ -577,8 +550,6 @@ export default function ChartsPage() {
                   sellSideLiquidity={analysisResult?.sell_side_liquidity}
                   suggestion={analysisResult?.suggestion}
                   candlestickPatterns={analysisResult?.candlestick_patterns}
-                  // rsiDivergences={analysisResult?.rsi_divergence} // Pass if needed
-                  // emaCrosses={analysisResult?.ema_crosses} // Pass if needed
                 />
               ) : (
                 <div className="flex justify-center items-center h-full"><p className="text-red-400">{isConnected ? "Could not load data." : "Please connect to your MT5 account."}</p></div>
@@ -586,44 +557,41 @@ export default function ChartsPage() {
             </div>
           </Card>
 
-          {/* --- MODIFICATION START: Conditional Mobile Analysis Card --- */}
+          {/* Conditional Mobile Analysis Card */}
           {analysisResult && (
             <Card className="block lg:hidden">
-              <CardHeader>
-                  {/* Intentionally blank or add a mobile-specific title */}
+              <CardHeader className="pt-6 pb-0"> {/* Adjusted padding */}
+                 {/* Optionally add title: <CardTitle>Analysis Results</CardTitle> */}
               </CardHeader>
-              <CardContent className="p-0"> {/* Remove default padding */}
+              <CardContent className="p-0">
                 <AnalysisContent />
               </CardContent>
             </Card>
           )}
-          {/* --- MODIFICATION END --- */}
 
-          {/* Chat Section - Render only if analysisResult exists */}
+          {/* Chat Section */}
           {analysisResult && (
-             <div className="h-[400px]">
+             <div className="h-[400px] mt-4"> {/* Added margin-top */}
                 <Chat analysisContext={analysisResult} />
              </div>
           )}
         </div>
 
         {/* Right Column (Analysis & Controls - For Desktop View) */}
-        {/* --- MODIFICATION START: Hide entire card on mobile --- */}
         <div className="lg:col-span-1 space-y-4 hidden lg:block">
-        {/* --- MODIFICATION END --- */}
           <Card className="flex flex-col min-h-[600px]">
-            <CardHeader>
+            <CardHeader className="pt-6 pb-0"> {/* Adjusted padding */}
               {/* Title Removed */}
             </CardHeader>
             <CardContent className="flex-grow flex flex-col">
-              {/* Analyze Button - Visible ONLY on lg screens and up */}
-              <div className="flex gap-2 mb-4"> {/* Removed hidden lg:flex, now always flex within this parent */}
-                  <Button onClick={handleAnalysis} disabled={isAnalyzing || !isConnected} className="w-full">
+              {/* Analyze Button */}
+              <div className="flex gap-2 mb-4">
+                  <Button onClick={handleAnalysis} disabled={isAnalyzing || !isConnected || settingsSaving} className="w-full">
                     <Zap className="w-4 h-4 mr-2" />
                     {isAnalyzing ? 'Analyzing...' : 'Analyze'}
                   </Button>
               </div>
-              {/* Analysis Content - Rendered via helper */}
+              {/* Analysis Content */}
               <div className="flex-grow overflow-y-auto">
                  <AnalysisContent />
               </div>
