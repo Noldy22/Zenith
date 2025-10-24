@@ -91,13 +91,12 @@
   }
 }
 
-/* Base styles, including your custom scrollbar.
-  We also apply the background and foreground colors here.
+/* We removed background/color here as it's now on the <html> tag
+  and added min-height to ensure the body fills the screen.
 */
 body {
-  background: var(--background);
-  color: var(--foreground);
   font-family: 'Inter', sans-serif, Arial, Helvetica;
+  min-height: 100vh;
 }
 
 /* Custom scrollbar for a more modern feel */
