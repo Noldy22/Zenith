@@ -2,7 +2,7 @@
 # --- (Keep all existing imports and configurations above this line) ---
 import MetaTrader5 as mt5
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 import json
 import threading
@@ -24,7 +24,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport.requests import Request as GoogleRequest
-import numpy # <<<--- ***Import numpy***
+import numpy
+import jwt
 
 
 # --- AI & Learning Imports ---
@@ -204,8 +205,8 @@ class User(UserMixin, db.Model):
 # --- Flask-Login User Loader ---
 @login_manager.user_loader
 def load_user(user_id):
-    # Flask-Login requires this function to load a user from the session ID
-    return User.query.get(int(user_id))
+    # Use the recommended db.session.get() instead of User.query.get()
+    return db.session.get(User, int(user_id))
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
@@ -1716,6 +1717,33 @@ def get_session():
         }
     }), 200
 
+@app.route('/api/auth/set-token')
+@login_required
+def set_token():
+    if not current_user.is_authenticated:
+        return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=AuthenticationFailed")
+
+    # --- Create JWT Token ---
+    try:
+        payload = {
+            'id': current_user.id,
+            'email': current_user.email,
+            'name': current_user.name,
+            'exp': datetime.now(timezone.utc) + timedelta(days=1) # Use timezone-aware UTC now
+        }
+        secret = app.config['SECRET_KEY']
+        token = jwt.encode(payload, secret, algorithm='HS256')
+
+        # --- Redirect to Frontend Token Verification Page ---
+        frontend_verify_url = f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/verify-token?token={token}"
+        logging.info(f"Generated JWT for user {current_user.email} and redirecting to frontend verification.")
+        return redirect(frontend_verify_url)
+
+    except Exception as e:
+        logging.error(f"Error creating JWT for user {current_user.email}: {e}", exc_info=True)
+        return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=TokenGenerationFailed")
+
+
 # --- END: Authentication API Routes ---
 
 # --- Google OAuth Routes ---
@@ -1780,12 +1808,9 @@ def google_callback():
         # If user exists and google_id already matches, just log them in
 
         login_user(user) # This sets the session cookie for the domain the request came from (127.0.0.1)
-        logging.info(f"API: User '{email}' logged in via Google OAuth.")
-        # Redirect to the frontend dashboard URL
-        frontend_dashboard_url = os.getenv('FRONTEND_URL', 'http://localhost:3000') + '/dashboard'
-        logging.info(f"Redirecting user to frontend dashboard: {frontend_dashboard_url}")
-        return redirect(frontend_dashboard_url)
-
+        logging.info(f"API: User '{email}' logged in via Google OAuth, redirecting to set token.")
+        # Instead of redirecting to the frontend, redirect to our new token setter endpoint
+        return redirect(url_for('set_token'))
 
     except Exception as e:
         logging.error(f"API: Error during Google OAuth callback: {e}", exc_info=True)
