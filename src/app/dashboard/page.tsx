@@ -1,20 +1,23 @@
+// src/app/dashboard/page.tsx
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react'; // Added useEffect
 import Link from 'next/link';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Settings, BarChart2 } from 'lucide-react';
+import { useSession } from 'next-auth/react'; // Import useSession
+import { useRouter } from 'next/navigation'; // Import useRouter
 
 // --- Core Imports ---
 import { getBackendUrl } from '@/lib/utils';
 
 // --- UI Component Imports ---
 import { Button } from '@/components/ui/button';
-import { 
-  Card, 
-  CardContent, 
-  CardHeader, 
+import {
+  Card,
+  CardContent,
+  CardHeader,
   CardTitle,
   CardFooter
 } from '@/components/ui/card';
@@ -34,20 +37,31 @@ const DashboardSkeleton = () => (
 );
 
 export default function DashboardPage() {
+    // --- Authentication Check ---
+    const { data: session, status } = useSession();
+    const router = useRouter();
+
+    // Redirect if not authenticated or still loading
+    useEffect(() => {
+        if (status === 'unauthenticated') {
+        router.push('/auth/signin'); // Redirect to login page
+        }
+    }, [status, router]);
+
     // --- Use Custom Hooks ---
     useSocketConnection(); // Manages connection toasts
-    const { settings, isLoading } = useAppSettings(); // Manages settings
+    const { settings, isLoading: settingsLoading } = useAppSettings(); // Manages settings
     const { accountInfo, tradeSignal, setTradeSignal } = useAccountData(settings); // Manages real-time data
 
-    // This local state is fine to keep here, as it's specific to this component's UI
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     // --- Helper Functions ---
     const handleConfirmTrade = async () => {
-        if (!tradeSignal) return;
+        // ... (keep existing handleConfirmTrade logic) ...
+         if (!tradeSignal) return;
         setIsSubmitting(true);
         try {
-            const response = await fetch(`${getBackendUrl()}/api/execute_manual_trade`, {
+            const response = await fetch(`${getBackendUrl()}/api/execute_manual_trade`, { // Assuming this endpoint requires auth now
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(tradeSignal),
@@ -56,8 +70,11 @@ export default function DashboardPage() {
             if (response.ok) {
                 toast.success("Trade confirmed and executed!");
                 setTradeSignal(null);
+            } else if (response.status === 401) {
+                 toast.error("Authentication error. Please log in again.");
+                 // Optionally redirect to login: router.push('/auth/signin');
             } else {
-                toast.error(`Trade failed: ${result.error}`);
+                toast.error(`Trade failed: ${result.error || 'Unknown error'}`);
             }
         } catch (e) {
             toast.error("Failed to connect to backend to execute trade.");
@@ -66,15 +83,22 @@ export default function DashboardPage() {
         }
     };
 
-    if (isLoading) {
+    // Show skeleton while loading session or settings
+    if (status === 'loading' || settingsLoading) {
         return <DashboardSkeleton />;
     }
 
+    // Don't render content if unauthenticated (should be redirected anyway)
+     if (status === 'unauthenticated') {
+        return null; // Or a simple "Redirecting..." message
+    }
+
+    // --- Render Dashboard Content (only if authenticated) ---
     return (
         <main className="p-4 sm:p-6 lg:p-8 min-h-screen">
             <ToastContainer theme="dark" position="bottom-right" />
 
-            {/* Use Card for the header */}
+            {/* Header Card */}
             <Card className="mb-6">
                 <CardHeader className="flex flex-row flex-wrap justify-between items-center">
                     <div>
@@ -99,10 +123,10 @@ export default function DashboardPage() {
                 </CardHeader>
             </Card>
 
+            {/* Trade Signal Card */}
             {tradeSignal && (
-                /* Use Card for the Trade Alert */
                 <Card className="bg-yellow-500/20 border-yellow-500 text-yellow-300 mb-6 shadow-xl animate-pulse">
-                    <CardHeader>
+                     <CardHeader>
                         <CardTitle className="flex items-center gap-2">
                            🚨 TRADE ALERT: {tradeSignal.trade_type} {tradeSignal.symbol}
                         </CardTitle>
@@ -112,16 +136,16 @@ export default function DashboardPage() {
                         <p>Position Size: {tradeSignal.lot_size} lots</p>
                     </CardContent>
                     <CardFooter className="gap-4">
-                        <Button 
-                            onClick={handleConfirmTrade} 
+                        <Button
+                            onClick={handleConfirmTrade}
                             className="bg-green-600 hover:bg-green-700"
                             disabled={isSubmitting}
                         >
                             {isSubmitting ? "Executing..." : "Confirm Trade"}
                         </Button>
-                        <Button 
+                        <Button
                             variant="destructive"
-                            onClick={() => setTradeSignal(null)} 
+                            onClick={() => setTradeSignal(null)}
                             disabled={isSubmitting}
                         >
                             Reject
@@ -130,8 +154,8 @@ export default function DashboardPage() {
                 </Card>
             )}
 
+            {/* Main Content Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Use Card for the main chart */}
                 <Card className="lg:col-span-2">
                     <CardHeader>
                         <CardTitle className="text-2xl font-semibold flex items-center gap-2">

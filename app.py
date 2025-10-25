@@ -1,8 +1,14 @@
 # app.py
-# (Keep all existing imports and other code the same)
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, url_for, session
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_bcrypt import Bcrypt
+from werkzeug.security import generate_password_hash, check_password_hash
+from google_auth_oauthlib.flow import Flow
+from google.oauth2 import id_token
+from google.auth.transport.requests import Request as GoogleRequest
 import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime, timedelta
@@ -26,13 +32,9 @@ from analysis import (
     calculate_volume_profile, calculate_rsi, find_rsi_divergence,
     calculate_emas, find_ema_crosses
 )
-# Make sure all necessary functions from learning are imported
 from learning import get_model_and_vectorizer, train_and_save_model, extract_features, predict_success_rate
 from backtest import run_backtest
-# --- MODIFIED IMPORT ---
-# We now import close_trade directly and no longer need monitor_and_close_trades
 from trade_monitor import manage_breakeven, manage_trailing_stop, close_trade
-
 
 # --- Gemini Configuration ---
 load_dotenv()
@@ -43,10 +45,11 @@ if GEMINI_API_KEY:
 else:
     print("Warning: GEMINI_API_KEY not found in .env file. Gemini features will be disabled.")
 
-# (Keep CORS setup, MT5Manager, AppState, mt5_required, Timeframe maps, init_db etc. as they are)
+# --- Flask App Setup ---
+app = Flask(__name__)
+
 # --- Dynamic Origin Configuration for CORS ---
 def get_local_ip():
-    """Finds the local IP address of the machine."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # Doesn't even have to be reachable
@@ -60,328 +63,517 @@ def get_local_ip():
 
 local_ip = get_local_ip()
 # Define allowed origins for CORS, including localhost and the machine's network IP
+# Make sure your frontend URL is included if deploying
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    f"http://{local_ip}:3000"
+    f"http://{local_ip}:3000",
+    os.getenv("FRONTEND_URL", "http://localhost:3000") # Add deployed frontend URL via env var
 ]
 
-app = Flask(__name__)
-# Apply CORS with the specific list of allowed origins
-CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
-# Configure Socket.IO with the same origins for robust WebSocket connections
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
+# --- App Configuration ---
+# Use a strong, randomly generated secret key stored in an environment variable
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'default-unsafe-secret-key-please-change')
+if app.config['SECRET_KEY'] == 'default-unsafe-secret-key-please-change':
+    print("WARNING: Using default Flask SECRET_KEY. Please set a strong FLASK_SECRET_KEY environment variable for production.")
 
-print("--- Zenith Backend Configuration ---")
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///trades.db' # The DB file will now store users and trades
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Required for Flask-Login sessions to work across requests
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax' # Can be 'Strict' if frontend/backend are same domain
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') == 'production' # Use secure cookies only over HTTPS
+
+# --- Extensions Initialization ---
+# supports_credentials=True allows cookies (like the session cookie) to be sent from the frontend
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+# If a route requires login and the user isn't logged in, Flask-Login usually redirects.
+# For an API, we want it to return a 401 Unauthorized error instead.
+login_manager.login_view = None # Disable redirect
+login_manager.unauthorized_handler(lambda: (jsonify(error="Login required."), 401))
+
+# --- Google OAuth Configuration ---
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+# Determine the base URL for the backend
+BACKEND_BASE_URL = os.getenv('BACKEND_URL')
+if not BACKEND_BASE_URL:
+    # Attempt to use local IP if not explicitly set
+    try:
+        BACKEND_BASE_URL = f'http://{get_local_ip()}:5000'
+    except Exception:
+        BACKEND_BASE_URL = 'http://127.0.0.1:5000' # Fallback to localhost
+
+GOOGLE_REDIRECT_URI = f"{BACKEND_BASE_URL}/api/auth/google/callback"
+
+# !! IMPORTANT FOR LOCAL DEVELOPMENT ONLY !!
+# Allow OAuthlib to work over HTTP. Remove this line in production (HTTPS is required).
+if os.getenv('FLASK_ENV') != 'production':
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    print("WARNING: Allowing insecure transport for OAuth (HTTP). This should NOT be enabled in production.")
+
+google_flow = None
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    try:
+        # Construct the client_secrets dictionary needed by the Flow object
+        client_secrets = {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "redirect_uris": [GOOGLE_REDIRECT_URI],
+                # You might need "javascript_origins" if configured in Google Cloud Console
+            }
+        }
+        google_flow = Flow.from_client_config(
+            client_config=client_secrets, # Pass the structured config
+            scopes=[ # Define the permissions we need from Google
+                "https://www.googleapis.com/auth/userinfo.profile", # Get name, picture
+                "https://www.googleapis.com/auth/userinfo.email",   # Get email address
+                "openid" # Standard OpenID Connect scope
+            ],
+            redirect_uri=GOOGLE_REDIRECT_URI
+        )
+        print("Google OAuth Flow configured successfully.")
+    except Exception as e:
+        print(f"Error configuring Google OAuth Flow: {e}. Check client secrets structure and environment variables.")
+        google_flow = None
+else:
+    print("Warning: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET environment variables not found. Google Login will be disabled.")
+
+print("\n--- Zenith Backend Configuration Summary ---")
 print(f"Detected Local IP: {local_ip}")
 print(f"Allowed CORS Origins: {allowed_origins}")
-print("---------------------------------")
+print(f"Flask Secret Key Loaded: {'Yes' if os.getenv('FLASK_SECRET_KEY') and app.config['SECRET_KEY'] != 'default-unsafe-secret-key-please-change' else 'No (Using default - UNSAFE FOR PRODUCTION)'}")
+print(f"Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}")
+print(f"Session Cookie Secure: {app.config['SESSION_COOKIE_SECURE']}")
+print(f"Google OAuth Enabled: {'Yes' if google_flow else 'No'}")
+if google_flow:
+    print(f"Google Redirect URI: {GOOGLE_REDIRECT_URI}")
+print("------------------------------------------\n")
 
 # --- Logging Configuration ---
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
+logging.basicConfig(level=logging.INFO, # Changed to INFO for less verbosity, DEBUG for more
+                    format='%(asctime)s [%(levelname)s] %(message)s (%(filename)s:%(lineno)d)',
                     handlers=[
-                        logging.FileHandler("zenith.log"),
-                        logging.StreamHandler()
+                        logging.FileHandler("zenith_app.log"), # Log to a file
+                        logging.StreamHandler() # Also log to console
                     ])
+logging.info("Flask application starting up...")
+
+# --- User Model (SQLAlchemy) ---
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(150), unique=True, nullable=False, index=True) # Added index
+    password_hash = db.Column(db.String(150), nullable=True) # Nullable for OAuth users
+    name = db.Column(db.String(150), nullable=True)
+    google_id = db.Column(db.String(150), unique=True, nullable=True, index=True) # Added index
+    # Add timestamps?
+    # created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, password):
+        # Use bcrypt for hashing
+        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+    def check_password(self, password):
+        if not self.password_hash:
+            return False
+        return bcrypt.check_password_hash(self.password_hash, password)
+
+    def __repr__(self):
+        return f'<User {self.email}>'
+
+# --- Flask-Login User Loader ---
+@login_manager.user_loader
+def load_user(user_id):
+    # Flask-Login requires this function to load a user from the session ID
+    return User.query.get(int(user_id))
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
     def __init__(self):
         self.lock = threading.Lock()
         self.is_initialized = False
+        logging.info("MT5Manager initialized.")
 
     def connect(self, credentials):
         with self.lock:
-            # Convert login to int here to ensure consistency
+            # Safely get and convert login ID
+            login_str = credentials.get('login', '')
             try:
-                login_int = int(credentials.get('login', 0))
+                login_int = int(login_str) if login_str else 0
             except (ValueError, TypeError):
+                logging.warning(f"Invalid MT5 login format received: '{login_str}'. Using 0.")
                 login_int = 0
 
+            # Check if already connected with the *same* account
             if self.is_initialized:
                 account_info = mt5.account_info()
                 if account_info and account_info.login == login_int:
-                    # print("MT5 already initialized and logged in with correct account.")
+                    logging.debug(f"MT5 already initialized for account {login_int}.")
                     return True
-                print("Login changed or MT5 disconnected. Shutting down for reconnect.")
+                # If login changed or connection lost, shutdown before reconnecting
+                logging.info(f"MT5 login changed (was {account_info.login if account_info else 'N/A'}, now {login_int}) or connection lost. Re-initializing.")
                 mt5.shutdown()
-                self.is_initialized = False # Force re-initialization if login changed
+                self.is_initialized = False
 
+            # Extract other credentials
             terminal_path = credentials.get('terminal_path', '').strip('\'"')
             password = credentials.get('password', '')
             server = credentials.get('server', '')
 
+            # Validate essential credentials
             if not login_int or not password or not server:
-                print("MT5 Connection Error: Missing credentials (login, password, or server).")
+                logging.error("MT5 Connection Error: Missing credentials (login, password, or server).")
                 self.is_initialized = False
                 return False
 
-            print(f"Attempting MT5 initialize with path: '{terminal_path if terminal_path else 'Default'}'")
-            if not mt5.initialize(path=terminal_path if terminal_path else None): # Pass None if empty path
-                print(f"initialize() failed, error code = {mt5.last_error()}")
+            logging.info(f"Attempting MT5 initialize with path: '{terminal_path if terminal_path else 'Default Path'}'")
+            # Initialize MT5 terminal connection
+            if not mt5.initialize(path=terminal_path if terminal_path else None, timeout=10000): # Increased timeout
+                logging.error(f"MT5 initialize() failed, error code = {mt5.last_error()}")
                 self.is_initialized = False
                 return False
-            print("MT5 initialized successfully.")
+            logging.info("MT5 initialized successfully.")
 
-            print(f"Attempting MT5 login for account {login_int} on server '{server}'")
+            # Login to the trading account
+            logging.info(f"Attempting MT5 login for account {login_int} on server '{server}'")
             if not mt5.login(login=login_int, password=password, server=server):
-                print(f"login() failed, error code = {mt5.last_error()}")
-                mt5.shutdown()
+                logging.error(f"MT5 login() failed for account {login_int}, error code = {mt5.last_error()}")
+                mt5.shutdown() # Shutdown if login fails
                 self.is_initialized = False
                 return False
 
-            print("MT5 Connection Successful")
+            logging.info(f"MT5 Connection Successful for account {login_int}")
             self.is_initialized = True
             return True
 
     def shutdown_mt5(self):
         with self.lock:
             if self.is_initialized:
-                print("Shutting down MT5 connection.")
+                logging.info("Shutting down MT5 connection.")
                 mt5.shutdown()
                 self.is_initialized = False
+            else:
+                logging.debug("Shutdown requested, but MT5 was not initialized.")
 
-mt5_manager = MT5Manager()
+mt5_manager = MT5Manager() # Instantiate the manager
 
-# --- Global State & Configuration ---
+# --- Global Application State ---
 class AppState:
     def __init__(self):
         self.autotrade_running = False
         self.autotrade_thread = None
         self.monitoring_running = False
         self.monitoring_thread = None
+        # Initialize with default settings structure
         self.settings = {
-            "trading_style": "DAY_TRADING",
-            "risk_per_trade": 2.0,
-            "max_daily_loss": 5.0,
-            "account_balance": 10000.0,
-            "auto_trading_enabled": False,
-            "notifications_enabled": True,
-            "min_confluence": 2,
-            "pairs_to_trade": [],
+            "trading_style": "DAY_TRADING", "risk_per_trade": 2.0, "max_daily_loss": 5.0,
+            "account_balance": 10000.0, "auto_trading_enabled": False, "notifications_enabled": True,
+            "min_confluence": 2, "pairs_to_trade": [],
             "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" },
-            "breakeven_enabled": False,
-            "breakeven_pips": 20,
-            "trailing_stop_enabled": False,
-            "trailing_stop_pips": 20,
-            "proactive_close_enabled": False
+            "breakeven_enabled": False, "breakeven_pips": 20, "trailing_stop_enabled": False,
+            "trailing_stop_pips": 20, "proactive_close_enabled": False
         }
-        self.lock = threading.Lock()
-        # --- ADDED: Load ML model on startup ---
+        self.lock = threading.Lock() # Lock for thread-safe access to settings/state
+        # Load ML model and vectorizer at startup
         self.ml_model, self.ml_vectorizer = get_model_and_vectorizer()
         if self.ml_model and self.ml_vectorizer:
-            print("ML Model and Vectorizer loaded successfully at startup.")
+            logging.info("ML Model and Vectorizer loaded successfully at startup.")
         else:
-            print("ML Model or Vectorizer not found or failed to load at startup.")
-
+            logging.warning("ML Model or Vectorizer not found or failed to load at startup.")
 
     def update_settings(self, new_settings):
+        """Safely updates application settings and handles MT5 reconnection if needed."""
         reconnect_needed = False
+        creds_valid_for_reconnect = False
+
         with self.lock:
-            current_creds = self.settings.get('mt5_credentials', {}).copy() # Get current before update
+            current_creds = self.settings.get('mt5_credentials', {}).copy()
+            logging.debug(f"Updating settings. Current creds: {current_creds}")
 
-            # Ensure login is an integer
-            if 'mt5_credentials' in new_settings and 'login' in new_settings['mt5_credentials']:
+            # --- Sanitize and Validate MT5 Credentials ---
+            if 'mt5_credentials' in new_settings and isinstance(new_settings.get('mt5_credentials'), dict):
+                new_creds_partial = new_settings['mt5_credentials']
+                login_str = new_creds_partial.get('login', current_creds.get('login', 0)) # Use current if missing
+                password = new_creds_partial.get('password', current_creds.get('password', ''))
+                server = new_creds_partial.get('server', current_creds.get('server', ''))
+                terminal_path = new_creds_partial.get('terminal_path', current_creds.get('terminal_path', ''))
+
                 try:
-                    # Try converting, default to 0 on failure
-                    login_val = new_settings['mt5_credentials']['login']
-                    new_settings['mt5_credentials']['login'] = int(login_val) if login_val else 0
+                    login_int = int(login_str) if login_str else 0
                 except (ValueError, TypeError):
-                     new_settings['mt5_credentials']['login'] = 0 # Default to 0 if invalid
+                    logging.warning(f"Invalid MT5 login format in update: '{login_str}'. Using 0.")
+                    login_int = 0
 
-            # Check if relevant credentials changed
-            new_creds = new_settings.get('mt5_credentials')
-            if new_creds and new_creds != current_creds:
-                 reconnect_needed = True
-                 print("MT5 credentials changed in settings.")
+                # Form the complete, validated credentials for the update
+                validated_new_creds = {
+                    "login": login_int,
+                    "password": password,
+                    "server": server,
+                    "terminal_path": terminal_path
+                }
+                new_settings['mt5_credentials'] = validated_new_creds # Replace partial with full
 
+                # Check if credentials *actually* changed compared to current state
+                if validated_new_creds != current_creds:
+                    reconnect_needed = True
+                    logging.info(f"MT5 credentials changed. New: {validated_new_creds}")
+                    # Check if the new credentials are minimally valid for a connection attempt
+                    if validated_new_creds['login'] and validated_new_creds['password'] and validated_new_creds['server']:
+                        creds_valid_for_reconnect = True
 
-            self.settings.update(new_settings)
-            # Make sure mt5_credentials exist before accessing login
-            login_exists = 'mt5_credentials' in self.settings and 'login' in self.settings['mt5_credentials']
+            # --- Merge Settings Deeply (especially for mt5_credentials) ---
+            updated_settings = self.settings.copy() # Start with current
+            for key, value in new_settings.items():
+                if key == 'mt5_credentials' and isinstance(value, dict):
+                    # Ensure mt5_credentials exists before updating
+                    if 'mt5_credentials' not in updated_settings:
+                        updated_settings['mt5_credentials'] = {}
+                    updated_settings['mt5_credentials'].update(value)
+                else:
+                    updated_settings[key] = value # Update other keys normally
 
-            print("Saving updated settings to settings.json")
-            with open('settings.json', 'w') as f:
-                json.dump(self.settings, f, indent=2) # Added indent for readability
+            self.settings = updated_settings # Apply the fully merged settings
 
-        # Attempt to reconnect outside the lock if needed
-        if reconnect_needed and login_exists and self.settings['mt5_credentials']['login']:
-            print("Attempting to reconnect MT5 with new credentials...")
-            mt5_manager.connect(self.settings['mt5_credentials'])
+            # --- Save to File ---
+            try:
+                with open('settings.json', 'w') as f:
+                    json.dump(self.settings, f, indent=2)
+                logging.info("Saved updated settings to settings.json")
+            except IOError as e:
+                logging.error(f"Error saving settings.json: {e}")
+
+        # --- Attempt Reconnect Outside Lock ---
+        if reconnect_needed and creds_valid_for_reconnect:
+            logging.info("Attempting to reconnect MT5 due to credential change...")
+            if mt5_manager.connect(self.settings['mt5_credentials']):
+                 logging.info("MT5 reconnected successfully with new credentials.")
+            else:
+                 logging.error("MT5 reconnection failed after settings update.")
+        elif reconnect_needed:
+             logging.warning("Credentials changed, but new credentials seem invalid. Skipping MT5 reconnect attempt.")
 
 
     def load_settings(self):
-        if os.path.exists('settings.json'):
-            try:
-                with open('settings.json', 'r') as f:
-                    loaded_settings = json.load(f)
-                    with self.lock:
-                        # Ensure login is int after loading
-                        if 'mt5_credentials' in loaded_settings and 'login' in loaded_settings['mt5_credentials']:
-                             try:
-                                 login_val = loaded_settings['mt5_credentials']['login']
-                                 loaded_settings['mt5_credentials']['login'] = int(login_val) if login_val else 0
-                             except (ValueError, TypeError):
-                                 loaded_settings['mt5_credentials']['login'] = 0
-                        self.settings.update(loaded_settings)
-                    print("Settings loaded from settings.json")
-            except json.JSONDecodeError:
-                print("Error reading settings.json file. Using defaults.")
-            except Exception as e:
-                 print(f"Unexpected error loading settings: {e}")
-        else:
-             print("settings.json not found. Using default settings.")
+        """Loads settings from file, merging with defaults, and attempts initial MT5 connection."""
+        settings_file = 'settings.json'
+        defaults = self.settings.copy() # Keep a copy of initial defaults
 
-        # Connect on startup if credentials exist and login is not 0
-        creds = self.settings.get('mt5_credentials') # Use get for safety
-        if creds and creds.get('login'):
-             print("Attempting initial MT5 connection from loaded settings...")
+        if os.path.exists(settings_file):
+            try:
+                with open(settings_file, 'r') as f:
+                    loaded_settings = json.load(f)
+                    logging.info(f"Loaded settings from {settings_file}")
+
+                    # --- Merge loaded settings onto defaults (deep merge for credentials) ---
+                    merged_settings = defaults # Start with defaults
+                    for key, value in loaded_settings.items():
+                        if key == 'mt5_credentials' and isinstance(value, dict):
+                            # Ensure mt5_credentials exists before updating
+                            if 'mt5_credentials' not in merged_settings:
+                                merged_settings['mt5_credentials'] = {}
+                            merged_settings['mt5_credentials'].update(value) # Merge dict
+                        elif key in merged_settings: # Only update keys that exist in defaults
+                            merged_settings[key] = value
+
+                    # --- Sanitize Loaded Credentials ---
+                    if 'mt5_credentials' in merged_settings:
+                        creds = merged_settings['mt5_credentials']
+                        login_str = creds.get('login', '')
+                        try:
+                            creds['login'] = int(login_str) if login_str else 0
+                        except (ValueError, TypeError):
+                            logging.warning(f"Invalid MT5 login format in settings file: '{login_str}'. Using 0.")
+                            creds['login'] = 0
+                        # Ensure other keys exist
+                        creds['password'] = creds.get('password', '')
+                        creds['server'] = creds.get('server', '')
+                        creds['terminal_path'] = creds.get('terminal_path', '')
+
+                    with self.lock:
+                        self.settings = merged_settings # Apply the merged settings
+
+            except json.JSONDecodeError:
+                logging.error(f"Error decoding JSON from {settings_file}. Using default settings.")
+                # Optionally save defaults back here if the file is corrupt
+            except Exception as e:
+                 logging.error(f"Unexpected error loading settings from {settings_file}: {e}", exc_info=True)
+                 logging.info("Using default settings.")
+        else:
+             logging.warning(f"{settings_file} not found. Using default settings and creating the file.")
+             try:
+                 with open(settings_file, 'w') as f:
+                     json.dump(self.settings, f, indent=2) # Save defaults
+             except IOError as e:
+                 logging.error(f"Error creating default {settings_file}: {e}")
+
+        # --- Initial MT5 Connection Attempt ---
+        creds = self.settings.get('mt5_credentials')
+        if creds and creds.get('login'): # Only connect if login ID is valid (non-zero)
+             logging.info("Attempting initial MT5 connection from loaded settings...")
              mt5_manager.connect(creds)
         else:
-            print("No valid MT5 login found in settings, skipping initial connection.")
+            logging.info("No valid MT5 login found in settings, skipping initial connection.")
 
+STATE = AppState() # Instantiate the global state
 
-STATE = AppState()
-
-# Decorator to ensure MT5 is connected
-def mt5_required(f):
+# --- Authentication Decorator ---
+def login_required_api(f):
+    """Decorator to ensure the user is logged in via Flask-Login session."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated:
+            logging.warning(f"Unauthorized access attempt to {request.path}")
+            return jsonify({"error": "Authentication required."}), 401
+        logging.debug(f"User {current_user.id} authorized for {request.path}")
+        return f(*args, **kwargs)
+    return decorated_function
+
+# --- MT5 Connection Decorator ---
+def mt5_required(f):
+    """Decorator ensuring user is logged in AND MT5 is connected."""
+    @wraps(f)
+    @login_required_api # User must be logged in first
+    def decorated_function(*args, **kwargs):
         if not mt5_manager.is_initialized:
-            print("MT5 connection required, but not initialized. Attempting reconnect...")
-            # Try to reconnect using saved settings
-            if not mt5_manager.connect(STATE.settings['mt5_credentials']):
-                print("Reconnect failed.")
-                return jsonify({"error": "MetaTrader 5 not connected. Please check credentials in settings and ensure terminal is running."}), 503
-            print("Reconnect successful.")
-        # print("MT5 connection check passed.")
+            logging.warning(f"MT5 connection required for {request.path}, but not initialized. Attempting reconnect...")
+            creds = STATE.settings.get('mt5_credentials')
+            if creds and creds.get('login'):
+                if not mt5_manager.connect(creds):
+                    logging.error(f"MT5 reconnect failed for {request.path}.")
+                    return jsonify({"error": "MetaTrader 5 connection failed. Check settings and terminal status."}), 503
+                logging.info(f"MT5 reconnected successfully for {request.path}.")
+            else:
+                 logging.warning(f"Cannot reconnect MT5 for {request.path}: No valid credentials.")
+                 return jsonify({"error": "MetaTrader 5 credentials not configured."}), 503
+        # If already initialized or reconnected successfully
+        logging.debug(f"MT5 connection verified for {request.path}")
         return f(*args, **kwargs)
     return decorated_function
 
 
 # --- Timeframe & Style Mapping ---
+# (No changes needed here)
 TIMEFRAME_MAP = {
     'M1': mt5.TIMEFRAME_M1, 'M5': mt5.TIMEFRAME_M5, 'M15': mt5.TIMEFRAME_M15,
-    'M30': mt5.TIMEFRAME_M30, # Added M30
-    'H1': mt5.TIMEFRAME_H1, 'H4': mt5.TIMEFRAME_H4, 'D1': mt5.TIMEFRAME_D1,
-    'W1': mt5.TIMEFRAME_W1,
-    'MN1': mt5.TIMEFRAME_MN1 # Added MN1
+    'M30': mt5.TIMEFRAME_M30, 'H1': mt5.TIMEFRAME_H1, 'H4': mt5.TIMEFRAME_H4,
+    'D1': mt5.TIMEFRAME_D1, 'W1': mt5.TIMEFRAME_W1, 'MN1': mt5.TIMEFRAME_MN1
 }
 TRADING_STYLE_TIMEFRAMES = {
-    "SCALPING": ["M1", "M5", "M15"],
-    "DAY_TRADING": ["M15", "H1", "H4"],
-    "SWING_TRADING": ["H1", "H4", "D1"],
-    "POSITION_TRADING": ["H4", "D1", "W1"]
+    "SCALPING": ["M1", "M5", "M15"], "DAY_TRADING": ["M15", "H1", "H4"],
+    "SWING_TRADING": ["H1", "H4", "D1"], "POSITION_TRADING": ["H4", "D1", "W1"]
 }
 
-# --- Database & MT5 Helpers ---
+# --- Database Initialization ---
 def init_db():
-    conn = sqlite3.connect('trades.db', check_same_thread=False)
-    cursor = conn.cursor()
-    # Added open_price, sl, tp columns to store suggestion details
-    cursor.execute('''CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id INTEGER,
-        symbol TEXT,
-        trade_type TEXT,
-        open_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        outcome INTEGER DEFAULT -1,
-        analysis_json TEXT,
-        open_price REAL,
-        sl REAL,
-        tp REAL
-    )''')
-    conn.commit()
-    conn.close()
-
-
-# --- FIXED format_bar_data ---
-def format_bar_data(bar, tf_str):
-    """Converts MT5 bar tuple (or named tuple) to dictionary format expected by lightweight-charts."""
-    # print(f"Raw bar data received: {bar} (Type: {type(bar)})") # Keep for debugging if needed
-
+    """Initializes the SQLite database and creates tables if they don't exist."""
+    logging.info("Initializing database...")
+    # Separate connection for the trades table (if you keep it separate)
+    # If User model is in the same DB, SQLAlchemy handles it below.
     try:
-        # MT5 copy_rates_from_pos returns tuples: (time, open, high, low, close, tick_volume, spread, real_volume)
-        # Access elements by index for plain tuples
-        time_raw = bar[0]
-        open_val = bar[1]
-        high_val = bar[2]
-        low_val = bar[3]
-        close_val = bar[4]
+        conn_trade = sqlite3.connect('trades.db', check_same_thread=False)
+        cursor_trade = conn_trade.cursor()
+        cursor_trade.execute('''CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, symbol TEXT,
+            trade_type TEXT, open_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            outcome INTEGER DEFAULT -1, analysis_json TEXT, open_price REAL,
+            sl REAL, tp REAL )''')
+        conn_trade.commit()
+        conn_trade.close()
+        logging.info("Trades table checked/created successfully.")
+    except sqlite3.Error as e:
+         logging.error(f"Error initializing trades table in trades.db: {e}")
 
-        # --- Time Formatting ---
+    # Create User table using SQLAlchemy within the app context
+    try:
+        with app.app_context():
+            logging.info("Creating SQLAlchemy tables (including User)...")
+            db.create_all()
+            logging.info("SQLAlchemy tables checked/created successfully.")
+    except Exception as e:
+         logging.error(f"Error creating SQLAlchemy tables: {e}", exc_info=True)
+
+
+# --- MT5 Data Formatting ---
+def format_bar_data(bar, tf_str):
+    """Converts MT5 bar tuple to a dictionary suitable for the frontend chart."""
+    try:
+        time_raw, open_val, high_val, low_val, close_val = bar[:5] # Extract first 5 elements
         dt = datetime.fromtimestamp(int(time_raw))
+
+        # Use BusinessDay for daily/weekly/monthly, timestamp for intraday
         if tf_str in ['D1', 'W1', 'MN1']:
             time_data = {"year": dt.year, "month": dt.month, "day": dt.day}
-        else: # Intraday timeframes use Unix timestamp (seconds)
-            time_data = int(time_raw)
+        else:
+            time_data = int(time_raw) # UTCTimestamp (seconds)
 
-        # --- OHLC Conversion (already likely numbers, but float() ensures) ---
-        open_f = float(open_val)
-        high_f = float(high_val)
-        low_f = float(low_val)
-        close_f = float(close_val)
-
-        formatted = {"time": time_data, "open": open_f, "high": high_f, "low": low_f, "close": close_f}
-        # print(f"Formatted bar: {formatted}") # Keep for debugging if needed
-        return formatted
-
+        return {
+            "time": time_data, "open": float(open_val), "high": float(high_val),
+            "low": float(low_val), "close": float(close_val)
+        }
     except (IndexError, ValueError, TypeError) as e:
-        # --- Catch potential errors accessing tuple indices or converting ---
-        print(f"ERROR formatting bar data: {e}. Bar data was: {bar}")
-        traceback.print_exc()
-        return None # Indicate failure
+        logging.error(f"Error formatting bar data: {e}. Bar data: {bar}", exc_info=True)
+        return None # Return None on failure
 
+# --- Core Analysis & Trading Logic (Functions remain largely the same) ---
+# These functions perform the technical analysis and generate suggestions.
+# No fundamental changes needed here for authentication itself.
 
-# --- Core Analysis & Trading Logic ---
-# Function to run analysis on multiple timeframes (used by auto-trader)
 def _run_full_analysis(symbol, credentials, style):
-    timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
-
+    """Runs analysis across multiple timeframes based on trading style."""
+    logging.info(f"Running full analysis for {symbol}, style {style}")
+    timeframes = TRADING_STYLE_TIMEFRAMES.get(style, TRADING_STYLE_TIMEFRAMES["DAY_TRADING"])
     analyses = {}
     for tf in timeframes:
         if tf not in TIMEFRAME_MAP:
-            print(f"Warning: Timeframe '{tf}' not found in TIMEFRAME_MAP. Skipping.")
+            logging.warning(f"Timeframe '{tf}' not in TIMEFRAME_MAP. Skipping.")
             continue
-        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200) # Fetch 200 bars for context
-        if rates is None or len(rates) < 50: # Need enough bars for indicators
-            print(f"Warning: Not enough data ({len(rates) if rates is not None else 0} bars) for {symbol} on {tf}. Skipping.")
+        # Ensure MT5 is connected before fetching rates
+        if not mt5_manager.connect(credentials): # Pass creds for potential reconnect
+             logging.error(f"MT5 connection lost during full analysis for {symbol}/{tf}. Skipping timeframe.")
+             analyses[tf] = {"error": "MT5 connection lost."}
+             continue # Skip this timeframe
+
+        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[tf], 0, 200)
+        if rates is None or len(rates) < 50:
+            logging.warning(f"Not enough data ({len(rates) if rates is not None else 0} bars) for {symbol} on {tf}. Skipping.")
             continue
 
-        # Format data carefully, filtering out None values if formatting fails
-        chart_data = [format_bar_data(r, tf) for r in rates]
-        chart_data = [bar for bar in chart_data if bar is not None] # Filter out failed formats
-
-        if len(chart_data) < 50: # Check again after potential filtering
-             print(f"Warning: Not enough valid data ({len(chart_data)} bars) for {symbol} on {tf} after formatting. Skipping.")
+        chart_data = [bar for bar in (format_bar_data(r, tf) for r in rates) if bar is not None]
+        if len(chart_data) < 50:
+             logging.warning(f"Not enough valid data ({len(chart_data)} bars) for {symbol} on {tf} after formatting. Skipping.")
              continue
 
         df = pd.DataFrame(chart_data)
         try:
-            # Pass the dataframe and symbol to the single timeframe analysis function
-             analyses[tf] = _run_single_timeframe_analysis(df, symbol)
+             analyses[tf] = _run_single_timeframe_analysis(df, symbol) # Call the single TF analysis
+             logging.debug(f"Completed analysis for {symbol}/{tf}")
         except Exception as e:
-            print(f"Error running analysis for {symbol} on {tf}: {e}")
-            traceback.print_exc() # Print full traceback
-            analyses[tf] = {"error": str(e)} # Store error in result
+            logging.error(f"Error running analysis for {symbol} on {tf}: {e}", exc_info=True)
+            analyses[tf] = {"error": str(e)}
 
+    logging.info(f"Finished full analysis for {symbol}")
     return analyses
 
 
-# --- Get analysis from Gemini ---
 def get_gemini_analysis(analysis_data):
+    """Gets trade suggestion refinement from Gemini AI."""
     if not GEMINI_API_KEY:
-        return {
-            "action": "Neutral",
-            "reason": "Gemini API key not configured.",
-            "entry": None, "sl": None, "tp": None
-        }
+        logging.warning("Gemini analysis requested but API key not configured.")
+        return { "action": "Neutral", "reason": "Gemini AI not configured.", "entry": None, "sl": None, "tp": None }
 
+    logging.info("Requesting analysis refinement from Gemini...")
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash') # Using 1.0 Pro for potentially better reasoning
+        model = genai.GenerativeModel('gemini-1.5-flash') # Consider 'gemini-pro' if flash is too basic
         prompt = f"""
-        As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from a multi-timeframe analysis narrative.
+        As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from the provided multi-timeframe technical analysis data. Focus on confluence and risk management.
 
         **Aggregated Market Data:**
         ```json
@@ -389,100 +581,79 @@ def get_gemini_analysis(analysis_data):
         ```
 
         **Instructions:**
-        1.  **Synthesize the Narrative:** Create a coherent market narrative by synthesizing the data. Pay close attention to how higher timeframe (HTF) structure aligns with lower timeframe (LTF) entry signals. For example, a downtrend on H4 gives more weight to a bearish setup on M15.
-        2.  **Identify Confluence:** Look for powerful confluence points. A setup is strongest when multiple factors align (e.g., price entering a demand zone, showing a bullish RSI divergence, and printing a bullish engulfing candle).
-        3.  **Consider the Contrarian View:** Briefly state the strongest argument *against* your proposed trade. This ensures a balanced analysis. For example, "The contrarian view is that the overall H4 trend is bearish, and this could be a minor pullback before continuation."
-        4.  **Formulate a Precise Trade Plan:** Based on your analysis, propose a single, actionable trade plan. If no high-probability setup exists, classify the action as "Neutral".
-        5.  **Provide Output in JSON Format ONLY:** Your entire response must be a single, valid JSON object with no other text or formatting.
+        1.  **Synthesize Narrative:** Create a brief market narrative considering HTF structure and LTF signals.
+        2.  **Identify Confluence:** Look for alignment of multiple factors (structure, zones, indicators).
+        3.  **Contrarian View:** State the main risk or argument against the trade.
+        4.  **Trade Plan:** Propose ONE precise Buy, Sell, or Neutral plan. If Neutral, explain why.
+        5.  **JSON Output ONLY:** Respond with only the JSON object below.
 
         **JSON Output Structure:**
         {{
-          "action": "Buy",
-          "reason": "A concise, expert-level justification for the trade (max 3 sentences), incorporating the multi-timeframe narrative.",
-          "contrarian_view": "The strongest argument against this trade.",
-          "entry": 1.23456,
-          "sl": 1.23300,
-          "tp": 1.23800
+          "action": "Buy" | "Sell" | "Neutral",
+          "reason": "Concise justification (max 3 sentences) incorporating narrative and confluence.",
+          "contrarian_view": "Strongest argument against this trade.",
+          "entry": 1.23456 | null,
+          "sl": 1.23300 | null,
+          "tp": 1.23800 | null
         }}
-
-        **Key Points for Analysis:**
-        - **Market Structure (HTF is king):** Is the primary trend bullish (HH/HL) or bearish (LL/LH)?
-        - **EMAs:** Is the price above or below the key EMAs (21, 50, 200)? Has a recent Golden/Death Cross occurred?
-        - **RSI:** Is the RSI overbought (>70), oversold (<30), or showing divergence? A bearish divergence in an uptrend is a powerful warning sign.
-        - **Key Zones:** Is the price reacting to a fresh Supply/Demand zone, Order Block, or FVG?
-        - **Liquidity:** Where are the obvious liquidity pools (equal highs/lows) that might be targeted?
-
-        **Example Reason:** "The H4 chart is in a clear uptrend with price respecting the 50 EMA. On the M15, a bullish RSI divergence has formed as price pulls back into a key demand zone, suggesting a high-probability long entry to target the buy-side liquidity at 1.24000."
         """
         response = model.generate_content(prompt)
-        # Clean up the response to ensure it's valid JSON
-        cleaned_response = response.text.strip().replace('```json', '').replace('```', '')
+        # Attempt to clean and parse the response
+        cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
         gemini_suggestion = json.loads(cleaned_response)
+        logging.info("Received Gemini analysis suggestion.")
+        logging.debug(f"Gemini Suggestion: {gemini_suggestion}")
         return gemini_suggestion
 
+    except json.JSONDecodeError as json_err:
+         logging.error(f"Error decoding Gemini JSON response: {json_err}. Response text: '{cleaned_response}'")
+         return { "action": "Neutral", "reason": "Error parsing Gemini response.", "entry": None, "sl": None, "tp": None }
     except Exception as e:
-        print(f"Error getting analysis from Gemini: {e}")
-        return {
-            "action": "Neutral",
-            "reason": f"Error communicating with Gemini AI: {e}",
-            "entry": None, "sl": None, "tp": None
-        }
+        logging.error(f"Error getting analysis from Gemini: {e}", exc_info=True)
+        return { "action": "Neutral", "reason": f"Error communicating with Gemini AI.", "entry": None, "sl": None, "tp": None }
 
-# --- UPDATED: Function to run analysis on a single timeframe ---
+
 def _run_single_timeframe_analysis(df, symbol):
-    """Runs the full analysis suite on a single dataframe and gets Gemini's input."""
+    """Runs the full technical analysis suite for a given DataFrame."""
+    logging.debug(f"Running single timeframe analysis for {symbol} with {len(df)} bars.")
     analysis = {"symbol": symbol, "current_price": df.iloc[-1]['close']}
     try:
-        # Perform all the existing technical analysis
-        socketio.emit('analysis_progress', {'message': 'Finding support and resistance...'})
+        socketio.emit('analysis_progress', {'message': 'Analyzing levels & structure...'})
         analysis["support"], analysis["resistance"], pivots = find_levels(df)
-
-        # --- NEW: Integrate advanced indicators ---
-        socketio.emit('analysis_progress', {'message': 'Calculating EMAs and crosses...'})
-        emas = calculate_emas(df)
-        analysis["ema_crosses"] = find_ema_crosses(df, emas)
-        # Add latest EMA values for context
-        analysis["emas"] = {key: val.iloc[-1] for key, val in emas.items()}
-
-        socketio.emit('analysis_progress', {'message': 'Calculating RSI and divergence...'})
-        rsi = calculate_rsi(df)
-        analysis["rsi_value"] = rsi.iloc[-1]
-        analysis["rsi_divergence"] = find_rsi_divergence(df, rsi, pivots)
-
-        socketio.emit('analysis_progress', {'message': 'Calculating Volume Profile...'})
-        analysis["volume_profile"] = calculate_volume_profile(df)
-        # --- END NEW ---
-
-        socketio.emit('analysis_progress', {'message': 'Determining market structure...'})
         analysis["market_structure"] = determine_market_structure(pivots)
-        socketio.emit('analysis_progress', {'message': 'Finding demand and supply zones...'})
+
+        socketio.emit('analysis_progress', {'message': 'Calculating indicators (EMA, RSI, Vol)...'})
+        emas = calculate_emas(df); analysis["emas"] = {key: val.iloc[-1] for key, val in emas.items()}
+        analysis["ema_crosses"] = find_ema_crosses(df, emas)
+        rsi = calculate_rsi(df); analysis["rsi_value"] = rsi.iloc[-1]
+        analysis["rsi_divergence"] = find_rsi_divergence(df, rsi, pivots)
+        analysis["volume_profile"] = calculate_volume_profile(df)
+
+        socketio.emit('analysis_progress', {'message': 'Identifying zones & liquidity...'})
         analysis["demand_zones"], analysis["supply_zones"] = find_sd_zones(df)
-        socketio.emit('analysis_progress', {'message': 'Finding order blocks...'})
         analysis["bullish_ob"], analysis["bearish_ob"] = find_order_blocks(df, pivots)
-        socketio.emit('analysis_progress', {'message': 'Finding fair value gaps...'})
         analysis["bullish_fvg"], analysis["bearish_fvg"] = find_fvgs(df)
-        socketio.emit('analysis_progress', {'message': 'Finding liquidity pools...'})
         analysis["buy_side_liquidity"], analysis["sell_side_liquidity"] = find_liquidity_pools(pivots)
-        socketio.emit('analysis_progress', {'message': 'Finding candlestick patterns...'})
+
+        socketio.emit('analysis_progress', {'message': 'Detecting patterns...'})
         analysis["candlestick_patterns"] = find_candlestick_patterns(df)
 
-        # Get the high-probability setup from Gemini
         socketio.emit('analysis_progress', {'message': 'Getting Gemini analysis...'})
-        gemini_suggestion = get_gemini_analysis(analysis)
+        gemini_suggestion = get_gemini_analysis(analysis) # Use Gemini for the primary suggestion
         analysis["suggestion"] = gemini_suggestion
-        
-        # The narrative and confidence are now based on the combined analysis
+
         analysis["confidence"] = calculate_confidence(analysis, analysis["suggestion"])
         analysis["narrative"] = generate_market_narrative(analysis)
-        
-        # The ML prediction can remain as a separate, complementary data point
+
+        # Get ML prediction as additional info
         predicted_rate = predict_success_rate(analysis, STATE.ml_model, STATE.ml_vectorizer)
         analysis["predicted_success_rate"] = predicted_rate
+        logging.debug(f"Analysis complete for {symbol}. Action: {analysis['suggestion']['action']}, Confidence: {analysis['confidence']}")
 
     except Exception as e:
-        print(f"Error during single timeframe analysis for {symbol}: {e}")
-        traceback.print_exc()
+        logging.error(f"Error during single timeframe analysis for {symbol}: {e}", exc_info=True)
         analysis["error"] = f"Analysis failed: {e}"
+        # Set default/error values
         analysis["suggestion"] = {"action": "Neutral", "reason": "Analysis error.", "entry": None, "sl": None, "tp": None}
         analysis["confidence"] = 0
         analysis["narrative"] = {"overview": f"Analysis failed for {symbol}", "structure_body": str(e), "levels_body": [], "prediction_body": ""}
@@ -491,1185 +662,1019 @@ def _run_single_timeframe_analysis(df, symbol):
     return analysis
 
 
-# --- *** MODIFIED: Trade Execution Logic (Simplified Size Calc) *** ---
-# --- FIX 2 (REVISED): Replaced _calculate_position_size ---
 def _calculate_position_size(balance, risk_pct, entry_price, sl_price, symbol):
-    """
-    Robust position size calculation based on contract size.
-    This avoids unreliable 'point' and 'tick_value' from the broker.
-    """
+    """Calculates trade volume based on risk percentage, SL distance, and contract size."""
+    logging.debug(f"Calculating position size for {symbol}: Balance={balance}, Risk%={risk_pct}, Entry={entry_price}, SL={sl_price}")
     if not mt5_manager.is_initialized:
-        print("Error: Cannot calculate size, MT5 not connected.")
-        return 0.01
+        logging.error("Cannot calculate position size: MT5 not connected.")
+        return 0.01 # Return minimum as fallback
 
     symbol_info = mt5.symbol_info(symbol)
     if not symbol_info:
-        print(f"Error: Could not get symbol info for {symbol}")
+        logging.error(f"Could not get symbol info for {symbol}")
         return 0.01
 
-    # 1. Calculate Amount to Risk
-    amount_to_risk = balance * (risk_pct / 100.0)
-    
-    # 2. Calculate Stop Loss distance in price
-    sl_distance_price = abs(entry_price - sl_price)
-    if sl_distance_price == 0:
-        print("Error: SL and Entry price are identical.")
-        return 0.01
-    
-    # 3. Get Contract Size
-    contract_size = symbol_info.trade_contract_size
-    if contract_size <= 0:
-        print(f"Error: Symbol {symbol} has invalid contract size: {contract_size}")
-        return 0.01
+    try:
+        # Validate inputs
+        if balance <= 0 or risk_pct <= 0:
+            logging.warning("Invalid balance or risk percentage for size calculation.")
+            return 0.01
+        if entry_price is None or sl_price is None or entry_price == sl_price:
+             logging.warning(f"Invalid entry/SL prices for size calculation: Entry={entry_price}, SL={sl_price}")
+             return 0.01
 
-    # 4. Calculate Risk per Lot
-    # This is the monetary value of the SL distance for 1 standard lot.
-    # Assumes the quote currency is the account currency (e.g., XAUUSD, EURUSD on a USD account)
-    risk_per_lot = sl_distance_price * contract_size
-    
-    if risk_per_lot <= 0:
-        print(f"Error: Invalid risk per lot ({risk_per_lot}). SL Distance: {sl_distance_price}, Contract Size: {contract_size}")
-        return 0.01
-        
-    # 5. Calculate Position Size
-    position_size = amount_to_risk / risk_per_lot
-    
-    # 6. Adhere to volume limits
-    min_lot = symbol_info.volume_min
-    max_lot = symbol_info.volume_max
-    step_lot = symbol_info.volume_step
-    
-    # Ensure it's at least min_lot
-    position_size = max(position_size, min_lot)
-    
-    # Ensure it's not over max_lot
-    position_size = min(position_size, max_lot)
-    
-    # Round to the nearest volume step
-    if step_lot > 0:
-        position_size = round(position_size / step_lot) * step_lot
-        # Re-check min_lot after rounding
-        position_size = max(position_size, min_lot)
+        amount_to_risk = balance * (risk_pct / 100.0)
+        sl_distance_price = abs(entry_price - sl_price)
+        contract_size = symbol_info.trade_contract_size
+        min_lot, max_lot, step_lot = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
 
-    print(f"Pos_Size Calc: RiskAmt={amount_to_risk:.2f}, SL_Dist={sl_distance_price}, ContractSize={contract_size}, RiskPerLot={risk_per_lot:.2f}, PosSize={position_size:.2f}")
-    return round(position_size, 2)
+        if contract_size <= 0:
+            logging.error(f"Symbol {symbol} has invalid contract size: {contract_size}")
+            return 0.01
+
+        # Calculate risk per standard lot (assuming quote currency = account currency)
+        # TODO: Add currency conversion if quote currency != account currency
+        risk_per_lot = sl_distance_price * contract_size
+        if risk_per_lot <= 0:
+            logging.error(f"Invalid risk per lot ({risk_per_lot}). SL Dist: {sl_distance_price}, Contract: {contract_size}")
+            return 0.01
+
+        position_size = amount_to_risk / risk_per_lot
+
+        # Apply volume constraints
+        position_size = max(position_size, min_lot) # Ensure minimum
+        position_size = min(position_size, max_lot) # Ensure maximum
+
+        # Round to step lot *after* min/max checks
+        if step_lot > 0:
+            position_size = round(position_size / step_lot) * step_lot
+            # Re-check min after rounding down potentially
+            position_size = max(position_size, min_lot)
+
+        final_size = round(position_size, 2) # Typically round to 2 decimal places for lots
+
+        logging.info(f"Position Size Calculation Result: RiskAmt={amount_to_risk:.2f}, SL_Dist={sl_distance_price:.5f}, ContractSize={contract_size}, RiskPerLot={risk_per_lot:.2f}, CalcSize={position_size:.4f}, FinalSize={final_size}")
+        return final_size
+
+    except Exception as e:
+        logging.error(f"Error calculating position size for {symbol}: {e}", exc_info=True)
+        return 0.01 # Fallback on any error
 
 
 def _execute_trade_logic(creds, trade_params):
-    """Executes the trade on MT5 and logs it to the database."""
-    if not mt5_manager.connect(creds):
+    """Connects to MT5, executes a trade, and logs it to the database."""
+    logging.info(f"Attempting trade execution: {trade_params['trade_type']} {trade_params['symbol']}")
+    if not mt5_manager.connect(creds): # Ensure connection/reconnect if needed
         raise ConnectionError("MT5 connection failed for trade execution")
 
     symbol = trade_params['symbol']
     trade_type_action = trade_params['trade_type'].upper()
-    volume = trade_params['lot_size']
-    sl_price = trade_params['sl']
-    tp_price = trade_params['tp']
+    volume = float(trade_params['lot_size'])
+    sl_price = float(trade_params['sl']) if trade_params.get('sl') is not None else 0.0
+    tp_price = float(trade_params['tp']) if trade_params.get('tp') is not None else 0.0
 
-    # --- Get current prices ---
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
-        raise ValueError(f"Could not get tick data for {symbol}")
+        raise ValueError(f"Could not get current tick data for {symbol}")
 
     price = tick.ask if trade_type_action == 'BUY' else tick.bid
-    # point = mt5.symbol_info(symbol).point # Not needed directly here
-
-    # --- Build MT5 Request ---
     mt5_trade_type = mt5.ORDER_TYPE_BUY if trade_type_action == 'BUY' else mt5.ORDER_TYPE_SELL
 
     request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": float(volume),
-        "type": mt5_trade_type,
-        "price": float(price),
-        "sl": float(sl_price),
-        "tp": float(tp_price),
-        "deviation": 10, # Allow 10 points deviation
-        "magic": 234000, # Magic number for Zenith trades
-        "comment": "Zenith AI Trade",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK, # Changed to FOK to fix 'Unsupported filling mode' error
+        "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
+        "type": mt5_trade_type, "price": price, "sl": sl_price, "tp": tp_price,
+        "deviation": 10, "magic": 234000, "comment": "Zenith AI Trade",
+        "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
     }
-    print(f"Sending trade request: {request}")
+    logging.info(f"Sending trade request to MT5: {request}")
 
-    # --- Send Order ---
     result = mt5.order_send(request)
-    print(f"Order send result: {result}")
-
+    logging.info(f"MT5 order_send result: {result}")
 
     if not result:
-         last_error = mt5.last_error()
-         print(f"Order send failed. Last error: {last_error}")
-         raise ValueError(f"Order send failed, error code = {last_error}")
+        last_error = mt5.last_error()
+        logging.error(f"MT5 order_send returned None. Last error: {last_error}")
+        raise ValueError(f"Order send failed (MT5 Error: {last_error})")
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        # Log more details on failure
-        print(f"Order failed. Retcode: {result.retcode}, Comment: {result.comment}, Request: {result.request}")
+        logging.error(f"Order failed. Retcode: {result.retcode}, Comment: {result.comment}, Request: {result.request}")
         raise ValueError(f"Order failed: {result.comment} (Retcode: {result.retcode})")
 
-    # --- Log successful trade to DB ---
-    conn = sqlite3.connect('trades.db', check_same_thread=False)
-    cursor = conn.cursor()
+    logging.info(f"Trade successful. Order ID: {result.order}, Executed Price: {result.price}")
+
+    # Log successful trade to DB
+    conn = None
     try:
-        # Use placeholders for security
+        conn = sqlite3.connect('trades.db', check_same_thread=False)
+        cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO trades (order_id, symbol, trade_type, analysis_json, open_price, sl, tp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            result.order,
-            symbol,
-            trade_type_action,
-            json.dumps(trade_params.get('analysis', {})), # Include analysis context if available
-            result.price, # Log the actual execution price from result
-            sl_price,
-            tp_price
-        ))
+            VALUES (?, ?, ?, ?, ?, ?, ?) """, (
+            result.order, symbol, trade_type_action,
+            json.dumps(trade_params.get('analysis', {})), # Store analysis context
+            result.price, # Use actual executed price
+            sl_price, tp_price ))
         conn.commit()
-        print(f"Successfully logged trade {result.order} to DB.")
+        logging.info(f"Successfully logged trade {result.order} to DB.")
     except sqlite3.Error as e:
-        print(f"Database Error logging trade {result.order}: {e}")
-        conn.rollback() # Rollback on error
+        logging.error(f"Database Error logging trade {result.order}: {e}")
+        if conn: conn.rollback()
     finally:
-        conn.close()
+        if conn: conn.close()
 
     return result
 
 
 def _update_trade_outcomes(ignore_magic_number=False):
-    """
-    Checks for closed trades and updates their outcomes in the database.
-    Returns a dictionary summarizing the operation.
-    """
-    print(f"Running trade outcome check... (Ignore Magic Number: {ignore_magic_number})")
-    summary = {
-        "deals_found_in_history": 0,
-        "pending_trades_in_db": 0,
-        "trades_updated": 0,
-        "error": None,
-        "magic_number_ignored": ignore_magic_number
-    }
+    """Checks closed MT5 deals against pending trades in DB and updates outcomes."""
+    logging.info(f"Running trade outcome check... (Ignore Magic Number: {ignore_magic_number})")
+    summary = { "deals_found": 0, "pending_in_db": 0, "updated": 0, "error": None }
+    conn = None # Initialize conn outside try block
     try:
+        if not mt5_manager.is_initialized: # Check connection before proceeding
+            raise ConnectionError("MT5 not connected, cannot update trade outcomes.")
+
+        # Get deals from the last 90 days (adjust as needed)
         from_date = datetime.now() - timedelta(days=90)
         history_deals = mt5.history_deals_get(from_date, datetime.now())
 
         if history_deals is None:
-            error_msg = f"Could not get trade history from MT5. Error: {mt5.last_error()}"
-            print(error_msg)
-            summary["error"] = error_msg
-            return summary
+            raise ConnectionError(f"Could not get trade history from MT5. Error: {mt5.last_error()}")
 
-        summary["deals_found_in_history"] = len(history_deals)
+        summary["deals_found"] = len(history_deals)
+        logging.debug(f"Found {len(history_deals)} deals in MT5 history.")
 
         conn = sqlite3.connect('trades.db', check_same_thread=False)
         cursor = conn.cursor()
 
+        # Get trades from DB that haven't had an outcome recorded yet
         cursor.execute("SELECT id, order_id FROM trades WHERE outcome = -1")
+        # Create a dictionary for quick lookup: {mt5_order_id: db_trade_id}
         pending_trades = {row[1]: row[0] for row in cursor.fetchall()}
-        summary["pending_trades_in_db"] = len(pending_trades)
+        summary["pending_in_db"] = len(pending_trades)
+        logging.debug(f"Found {len(pending_trades)} pending trades in DB.")
 
         if not pending_trades:
-            conn.close()
-            return summary
+            return summary # No pending trades to update
 
         updated_count = 0
+        # Iterate through MT5 deals to find matches for our pending trades
         for deal in history_deals:
-            # The condition to check if a deal corresponds to a pending trade
-            is_matching_deal = (
+            # A deal represents a trade entry or exit. We care about exits.
+            # deal.entry == 1 means exit deal
+            # Check if this deal's order ID is in our pending list and matches magic number (optionally)
+            is_matching_exit_deal = (
                 deal.order in pending_trades and
-                deal.entry == 1 and
-                (ignore_magic_number or deal.magic == 234000) # Conditionally check magic number
+                deal.entry == 1 and # DEAL_ENTRY_OUT (Normal close by SL/TP/Manual)
+                (ignore_magic_number or deal.magic == 234000)
             )
 
-            if is_matching_deal:
-                outcome = 1 if deal.profit >= 0 else 0
+            if is_matching_exit_deal:
+                outcome = 1 if deal.profit >= 0 else 0 # 1 for win/breakeven, 0 for loss
                 db_id = pending_trades[deal.order]
                 cursor.execute("UPDATE trades SET outcome = ? WHERE id = ?", (outcome, db_id))
                 updated_count += 1
-                # Remove the trade from pending_trades to avoid updating it again with another deal
-                del pending_trades[deal.order]
-                print(f"Updated outcome for Order ID {deal.order} (DB ID: {db_id}) to {outcome} (Profit: {deal.profit})")
-
+                del pending_trades[deal.order] # Remove from pending list
+                logging.info(f"Updated outcome for Order ID {deal.order} (DB ID: {db_id}) to {outcome} (Profit: {deal.profit:.2f})")
 
         if updated_count > 0:
             conn.commit()
-            print(f"Committed {updated_count} trade outcome updates to the database.")
+            logging.info(f"Committed {updated_count} trade outcome updates to the database.")
 
-        summary["trades_updated"] = updated_count
-        conn.close()
+        summary["updated"] = updated_count
 
-    except Exception as e:
-        error_msg = f"An unexpected error occurred in _update_trade_outcomes: {e}"
-        print(error_msg)
-        traceback.print_exc()
+    except ConnectionError as ce:
+        error_msg = f"MT5 Connection Error during outcome update: {ce}"
+        logging.error(error_msg)
         summary["error"] = error_msg
+    except sqlite3.Error as db_e:
+        error_msg = f"Database Error during outcome update: {db_e}"
+        logging.error(error_msg, exc_info=True)
+        if conn: conn.rollback()
+        summary["error"] = error_msg
+    except Exception as e:
+        error_msg = f"Unexpected error in _update_trade_outcomes: {e}"
+        logging.error(error_msg, exc_info=True)
+        summary["error"] = error_msg
+    finally:
+        if conn: conn.close() # Ensure connection is closed
 
     return summary
 
-# --- *** MODIFIED: Auto-Trading Loop *** ---
-# (This loop now only scans for NEW trades on symbols with no open positions)
+
+# --- Background Threads ---
+
 def trading_loop():
-    print("Auto-trading thread started.")
+    """Background thread to scan for new auto-trading opportunities."""
+    logging.info("Auto-trading thread started.")
     while STATE.autotrade_running:
-        with STATE.lock:
-            settings = STATE.settings.copy() # Get a copy of current settings
+        try: # Wrap main loop iteration in try/except
+            with STATE.lock: settings = STATE.settings.copy()
 
-        if not settings.get('auto_trading_enabled') or not mt5_manager.is_initialized:
-            time.sleep(10) # Wait longer if disabled or not connected
-            continue
+            if not settings.get('auto_trading_enabled') or not mt5_manager.is_initialized:
+                logging.debug("Auto-trade disabled or MT5 disconnected. Sleeping.")
+                time.sleep(30) # Sleep longer if disabled
+                continue
 
-        print(f"[{datetime.now()}] Auto-trader running scan for NEW trades...")
-        symbols_to_trade = settings.get('pairs_to_trade', [])
-        if not symbols_to_trade:
-             print("Warning: No pairs selected for auto-trading in settings.")
-             time.sleep(60)
-             continue
+            logging.info(f"[{datetime.now()}] Auto-trader: Starting scan for NEW trades...")
+            symbols_to_trade = settings.get('pairs_to_trade', [])
+            if not symbols_to_trade:
+                 logging.warning("Auto-trader: No pairs selected for auto-trading in settings.")
+                 time.sleep(60)
+                 continue
 
+            creds = settings.get('mt5_credentials') # Use credentials from the copied settings
 
-        for symbol in symbols_to_trade:
-            if not STATE.autotrade_running: break # Check if stopped during loop
+            for symbol in symbols_to_trade:
+                if not STATE.autotrade_running: break # Exit if stopped
 
-            # --- NEW LOGIC TO SKIP ACTIVE SYMBOLS ---
-            open_positions = mt5.positions_get(symbol=symbol)
-            if open_positions is not None and len(open_positions) > 0:
-                # Check if any of these positions are ours
-                bot_positions_on_symbol = [p for p in open_positions if p.magic == 234000]
-                if len(bot_positions_on_symbol) > 0:
-                    print(f"[{datetime.now()}] trading_loop: Skipping {symbol}, already has open positions managed by monitor.")
-                    continue # Skip this symbol, it's handled by the monitoring loop
-            # --- END NEW LOGIC ---
-
-            try:
-                # Run multi-TF analysis (which now includes prediction per TF)
-                analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
-                if not analyses:
-                    print(f"No analysis data generated for {symbol}.")
+                # --- Skip if bot already has position on this symbol ---
+                open_positions = mt5.positions_get(symbol=symbol)
+                if open_positions and any(p.magic == 234000 for p in open_positions):
+                    logging.debug(f"Auto-trader: Skipping {symbol}, existing bot position found.")
                     continue
 
-                # --- Confluence Logic (unchanged, but uses analysis with prediction) ---
-                suggestions_with_confidence = []
-                for tf, analysis_result in analyses.items():
-                    if "error" not in analysis_result and analysis_result.get('suggestion'):
-                        suggestions_with_confidence.append({
-                            'action': analysis_result['suggestion']['action'],
-                            'confidence': analysis_result.get('confidence', 0), # TA confidence
-                            'predicted_rate': analysis_result.get('predicted_success_rate', "N/A"),
-                            'tf': tf
-                        })
-
-                if not suggestions_with_confidence:
-                     print(f"No valid suggestions generated for {symbol} across timeframes.")
-                     continue
-
-                buys = sum(1 for s in suggestions_with_confidence if s['action'] == 'Buy')
-                sells = sum(1 for s in suggestions_with_confidence if s['action'] == 'Sell')
-
-                final_action = "Neutral"
-                confluence_count = 0
-                if buys > sells:
-                    final_action = "Buy"
-                    confluence_count = buys
-                elif sells > buys:
-                    final_action = "Sell"
-                    confluence_count = sells
-
-                min_confluence = settings.get('min_confluence', 2)
-
-                if final_action != "Neutral" and confluence_count >= min_confluence:
-                    # We already checked for open positions, but we can double check here
-                    open_positions = mt5.positions_get(symbol=symbol)
-                    if open_positions is not None and len(open_positions) > 0:
-                        print(f"Skipping {final_action} on {symbol}: A position was opened while scanning.")
-                        continue # Skip this trade
-                   
-                    # Use the primary timeframe's analysis for execution details
-                    primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
-                    if primary_tf not in analyses or "error" in analyses[primary_tf]:
-                        print(f"Primary timeframe {primary_tf} analysis failed or missing for {symbol}. Skipping trade.")
+                try:
+                    # --- Run Analysis ---
+                    analyses = _run_full_analysis(symbol, creds, settings['trading_style'])
+                    if not analyses:
+                        logging.warning(f"Auto-trader: No analysis data for {symbol}.")
                         continue
 
-                    primary_analysis = analyses[primary_tf]
-                    suggestion = primary_analysis['suggestion']
-                    predicted_rate_str = primary_analysis.get('predicted_success_rate', "N/A")
+                    # --- Confluence Check ---
+                    suggestions = [(tf, a) for tf, a in analyses.items() if "error" not in a and a.get('suggestion')]
+                    if not suggestions: continue
 
-                    # Calculate SL pips and position size
-                    if suggestion['entry'] is None or suggestion['sl'] is None:
-                         print(f"Skipping {final_action} on {symbol}: Missing entry or SL price in suggestion.")
-                         continue
+                    buys = sum(1 for _, a in suggestions if a['suggestion']['action'] == 'Buy')
+                    sells = sum(1 for _, a in suggestions if a['suggestion']['action'] == 'Sell')
+                    final_action = "Buy" if buys > sells else "Sell" if sells > buys else "Neutral"
+                    confluence_count = max(buys, sells)
 
-                    # --- *** FIX 2: REMOVED OLD SL_PIPS LOGIC *** ---
+                    min_confluence = settings.get('min_confluence', 2)
+                    logging.debug(f"Auto-trader: {symbol} confluence - Buys={buys}, Sells={sells}. Action={final_action}, Count={confluence_count}, MinReq={min_confluence}")
 
-                    # Use current balance for calculation
-                    current_balance = settings['account_balance'] # Start with setting
-                    account_info = mt5.account_info()
-                    if account_info:
-                        current_balance = account_info.balance # Use live balance if available
+                    if final_action != "Neutral" and confluence_count >= min_confluence:
+                        # --- Prepare & Execute Trade ---
+                        primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
+                        primary_analysis = next((a for tf, a in suggestions if tf == primary_tf), None)
+                        if not primary_analysis:
+                             logging.warning(f"Auto-trader: Primary timeframe {primary_tf} analysis missing/failed for {symbol}. Skipping.")
+                             continue
 
-                    # --- *** FIX 2: NEW CALL to _calculate_position_size *** ---
-                    pos_size = _calculate_position_size(
-                        current_balance, 
-                        settings['risk_per_trade'], 
-                        suggestion['entry'], 
-                        suggestion['sl'], 
-                        symbol
-                    )
+                        suggestion = primary_analysis['suggestion']
+                        if suggestion['action'] != final_action:
+                            logging.warning(f"Auto-trader: Primary TF action ({suggestion['action']}) mismatches final action ({final_action}) for {symbol}. Skipping.")
+                            continue
+                        if suggestion['entry'] is None or suggestion['sl'] is None or suggestion['tp'] is None:
+                            logging.warning(f"Auto-trader: Incomplete suggestion details for {symbol} on {primary_tf}. Skipping.")
+                            continue
 
-                    if pos_size < 0.01:
-                        # Updated log message for clarity
-                        print(f"Skipping {final_action} on {symbol}: Calculated position size too small ({pos_size}).")
-                        continue
+                        # Double-check position before execution (race condition)
+                        if mt5.positions_get(symbol=symbol):
+                            logging.info(f"Auto-trader: Position opened on {symbol} during analysis. Skipping.")
+                            continue
 
-                    trade_params = {
-                        "symbol": symbol,
-                        "trade_type": final_action,
-                        "lot_size": pos_size,
-                        "sl": suggestion['sl'],
-                        "tp": suggestion['tp'],
-                        "analysis": primary_analysis # Log the primary TF analysis
-                    }
+                        # Calculate Size
+                        account_info = mt5.account_info(); current_balance = account_info.balance if account_info else settings['account_balance']
+                        pos_size = _calculate_position_size(current_balance, settings['risk_per_trade'], suggestion['entry'], suggestion['sl'], symbol)
+                        if pos_size < 0.01:
+                            logging.warning(f"Auto-trader: Calculated position size too small ({pos_size}) for {symbol}. Skipping.")
+                            continue
 
-                    # Always emit the signal
-                    signal_message = (
-                        f"{final_action} signal on {symbol} ({primary_tf}) "
-                        f"with {confluence_count}-TF confluence. "
-                        f"TA Conf: {primary_analysis['confidence']}%. "
-                        f"ML Pred: {predicted_rate_str}."
-                    )
-                    socketio.emit('trade_signal', {
-                        "params": trade_params,
-                        "message": signal_message
-                    })
+                        trade_params = {
+                            "symbol": symbol, "trade_type": final_action, "lot_size": pos_size,
+                            "sl": suggestion['sl'], "tp": suggestion['tp'], "analysis": primary_analysis
+                        }
 
-                    # Execute if auto-trading is enabled
-                    if settings['auto_trading_enabled']:
-                        print(f"Executing {final_action} on {symbol}...")
-                        try:
-                            result = _execute_trade_logic(settings['mt5_credentials'], trade_params)
-                            notification_message = (
-                                f"Auto-trade executed: {final_action} {pos_size:.2f} lots of {symbol}. "
-                                f"Order ID: {result.order}"
-                            )
-                            socketio.emit('notification', {"message": notification_message})
-                            print(notification_message)
-                            time.sleep(300) # Cooldown after trading this pair
-                        except Exception as exec_e:
-                            error_message = f"Auto-trade execution failed for {symbol}: {exec_e}"
-                            print(error_message)
-                            socketio.emit('notification', {"message": error_message, "type": "error"})
+                        # Emit Signal (always)
+                        signal_msg = f"{final_action} signal: {symbol} ({primary_tf}), {confluence_count}-TF confluence. TA:{primary_analysis['confidence']}%, ML:{primary_analysis.get('predicted_success_rate', 'N/A')}"
+                        socketio.emit('trade_signal', {"params": trade_params, "message": signal_msg})
+                        logging.info(f"Emitted trade signal: {signal_msg}")
 
-            except Exception as e:
-                error_log = f"Error in trading loop for {symbol}: {e}"
-                print(error_log)
-                traceback.print_exc() # Print full traceback for debugging loop errors
-                # Optionally emit a notification about the loop error
-                # socketio.emit('notification', {"message": error_log, "type": "error"})
+                        # Execute Trade (if auto-trading enabled)
+                        if settings['auto_trading_enabled']:
+                            logging.info(f"Auto-trader: Executing {final_action} {pos_size:.2f} lots on {symbol}...")
+                            try:
+                                result = _execute_trade_logic(creds, trade_params)
+                                exec_msg = f"Auto-trade executed: {final_action} {pos_size:.2f} {symbol}. Order: {result.order}"
+                                socketio.emit('notification', {"message": exec_msg})
+                                logging.info(exec_msg)
+                                time.sleep(180) # Cooldown for this symbol after trading
+                            except Exception as exec_e:
+                                error_msg = f"Auto-trade execution failed for {symbol}: {exec_e}"
+                                logging.error(error_msg)
+                                socketio.emit('notification', {"message": error_msg, "type": "error"})
 
-            if not STATE.autotrade_running: break # Check again after processing a symbol
+                except Exception as sym_e:
+                     logging.error(f"Error processing symbol {symbol} in trading loop: {sym_e}", exc_info=True)
 
-        if STATE.autotrade_running:
-            scan_wait_time = 2700 # 45 mins wait before another scan runs
-            print(f"Scan complete. Waiting {scan_wait_time} seconds...")
-            time.sleep(scan_wait_time) # Wait 45 minutes
+                if not STATE.autotrade_running: break # Check again after symbol processing
 
-    print("Auto-trading thread stopped.")
+            # --- Wait before next full scan ---
+            if STATE.autotrade_running:
+                scan_wait_time = 1800 # 30 minutes
+                logging.info(f"Auto-trader: Scan complete. Waiting {scan_wait_time} seconds...")
+                time.sleep(scan_wait_time)
+
+        except Exception as loop_e:
+             logging.critical(f"Critical error in main trading loop: {loop_e}", exc_info=True)
+             time.sleep(60) # Wait a bit before retrying after a major error
+
+    logging.info("Auto-trading thread stopped.")
 
 
-# --- *** MODIFIED: Trade Monitoring Loop *** ---
-# (This loop now manages active trades, closes bad ones, and scales into good ones)
 def trade_monitoring_loop():
-    """
-    Background thread loop for proactive trade management.
-    This loop now also handles scaling-in and closing trades that are against market bias.
-    """
-    print("Trade monitoring thread started.")
+    """Background thread for managing active trades (BE, TS, Proactive Close)."""
+    logging.info("Trade monitoring thread started.")
     while STATE.monitoring_running:
-        if mt5_manager.is_initialized:
-            
+        try: # Wrap main loop iteration
+            if not mt5_manager.is_initialized:
+                logging.debug("Trade Monitor: MT5 not connected. Sleeping.")
+                time.sleep(60)
+                continue
+
             open_positions = mt5.positions_get()
             if not open_positions:
-                print("Trade Monitor: No open positions found.")
-                time.sleep(60) # Sleep for 60s if no trades, then check again
+                logging.debug("Trade Monitor: No open positions found.")
+                time.sleep(60)
                 continue
 
-            with STATE.lock:
-                settings = STATE.settings.copy()
+            with STATE.lock: settings = STATE.settings.copy()
+            creds = settings.get('mt5_credentials')
 
-            # Find all symbols that have bot trades on them
             bot_positions = [p for p in open_positions if p.magic == 234000]
-            active_symbols = list(set(p.symbol for p in bot_positions)) # Get unique symbols
+            active_symbols = list(set(p.symbol for p in bot_positions))
 
             if not active_symbols:
-                print("Trade Monitor: No open bot positions found.")
-                time.sleep(60) # Sleep for 60s if no bot trades, then check again
+                logging.debug("Trade Monitor: No open *bot* positions found.")
+                time.sleep(60)
                 continue
-            
-            print(f"[{datetime.now()}] Trade monitor running check for: {active_symbols}")
+
+            logging.info(f"[{datetime.now()}] Trade Monitor: Checking active bot symbols: {active_symbols}")
 
             for symbol in active_symbols:
                 if not STATE.monitoring_running: break
 
                 try:
-                    # 1. RUN THE FULL ANALYSIS (THIS IS THE API CALL)
-                    analyses = _run_full_analysis(symbol, settings['mt5_credentials'], settings['trading_style'])
+                    # --- Run Analysis for Current Bias ---
+                    analyses = _run_full_analysis(symbol, creds, settings['trading_style'])
                     if not analyses:
-                        print(f"Trade Monitor: Failed to get analysis for {symbol}")
+                        logging.warning(f"Trade Monitor: Failed to get analysis for active symbol {symbol}")
                         continue
 
-                    # 2. GET CURRENT MARKET BIAS from the analysis
-                    buys = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Buy')
-                    sells = sum(1 for tf, analysis in analyses.items() if analysis.get('suggestion', {}).get('action') == 'Sell')
-                    
-                    current_market_bias = "Neutral"
-                    if buys > sells: current_market_bias = "Buy"
-                    elif sells > buys: current_market_bias = "Sell"
+                    # --- Determine Market Bias ---
+                    buys = sum(1 for _, a in analyses.items() if not a.get("error") and a.get('suggestion', {}).get('action') == 'Buy')
+                    sells = sum(1 for _, a in analyses.items() if not a.get("error") and a.get('suggestion', {}).get('action') == 'Sell')
+                    current_market_bias = "Buy" if buys > sells else "Sell" if sells > buys else "Neutral"
+                    logging.debug(f"Trade Monitor: Bias for {symbol} = {current_market_bias} (B:{buys}/S:{sells})")
 
-                    # 3. MANAGE/CLOSE EXISTING TRADES FOR THIS SYMBOL
-                    positions_on_symbol = [p for p in bot_positions if p.symbol == symbol]
-                    
-                    # We need a list of positions to iterate over that won't change
-                    # if one gets closed inside the loop
-                    positions_to_check = list(positions_on_symbol) 
-                    
-                    for position in positions_to_check:
-                        # Re-check if position still exists (might have been closed by previous logic)
+                    # --- Manage Existing Positions for this Symbol ---
+                    positions_to_check = [p for p in bot_positions if p.symbol == symbol]
+                    for position in list(positions_to_check): # Iterate over a copy
+                        # Verify position still exists
                         if mt5.positions_get(ticket=position.ticket) is None:
-                            continue 
-                            
-                        symbol_info = mt5.symbol_info(position.symbol)
-                        if not symbol_info: continue
+                            logging.info(f"Trade Monitor: Position {position.ticket} closed during check.")
+                            continue
 
-                        # Manage Breakeven and Trailing Stop (no API calls)
+                        symbol_info = mt5.symbol_info(position.symbol)
+                        if not symbol_info:
+                             logging.warning(f"Trade Monitor: Could not get symbol info for {position.symbol}. Skipping management for {position.ticket}.")
+                             continue
+
+                        # Apply BE and TS
                         manage_breakeven(position, settings, symbol_info)
                         manage_trailing_stop(position, settings, symbol_info)
 
-                        # Check if trade is against the market bias (proactive close)
+                        # Proactive Close Check
                         if settings.get('proactive_close_enabled', False):
-                            if position.type == 0 and current_market_bias == "Sell": # Open Buy, market is Bearish
-                                print(f"Trade Monitor: Closing {symbol} BUY position {position.ticket}, market bias is now Sell.")
-                                close_trade(position)
-                            elif position.type == 1 and current_market_bias == "Buy": # Open Sell, market is Bullish
-                                print(f"Trade Monitor: Closing {symbol} SELL position {position.ticket}, market bias is now Buy.")
-                                close_trade(position)
+                            position_type = 0 if position.type == mt5.ORDER_TYPE_BUY else 1 # 0=Buy, 1=Sell
+                            should_close = (position_type == 0 and current_market_bias == "Sell") or \
+                                           (position_type == 1 and current_market_bias == "Buy")
+                            if should_close:
+                                logging.info(f"Trade Monitor: Proactively closing {symbol} {'BUY' if position_type==0 else 'SELL'} {position.ticket} due to market bias shift to {current_market_bias}.")
+                                try:
+                                    close_trade(position) # Call the imported close function
+                                    socketio.emit('notification', {"message": f"Proactively closed {symbol} position {position.ticket}."})
+                                except Exception as close_e:
+                                     logging.error(f"Trade Monitor: Error during proactive close for {position.ticket}: {close_e}")
+                                     socketio.emit('notification', {"message": f"Error closing {position.ticket}: {close_e}", "type": "error"})
 
-                    # 4. LOGIC TO ADD (SCALE-IN) NEW TRADES
-                    
-                    # Re-fetch positions to see what's left after potential closing
+                    # --- Scale-in Logic (Optional - keep if desired) ---
+                    # Re-fetch remaining positions after potential closes
                     remaining_positions = mt5.positions_get(symbol=symbol)
-                    bot_positions_remaining = []
-                    if remaining_positions:
-                        bot_positions_remaining = [p for p in remaining_positions if p.magic == 234000]
+                    bot_positions_remaining = [p for p in (remaining_positions or []) if p.magic == 234000]
 
                     if not bot_positions_remaining:
-                        print(f"Trade Monitor: All positions on {symbol} were closed. It will be scanned by trading_loop next cycle.")
-                        continue # This symbol is now "free" for the trading_loop
+                        logging.debug(f"Trade Monitor: No bot positions remain on {symbol} after checks.")
+                        continue # Move to next symbol
 
-                    # Get the direction of our *first* remaining trade on this symbol
-                    current_trade_direction = "Buy" if bot_positions_remaining[0].type == 0 else "Sell" 
+                    # Add scale-in logic here if needed, similar to the previous version
+                    # Ensure you check if scaling-in is enabled via settings, check max positions etc.
+                    # logging.debug(f"Trade Monitor: Skipping scale-in logic for {symbol} (not implemented/enabled).")
 
-                    if current_market_bias == current_trade_direction:
-                        # Market aligns with our trade, check for a new entry signal
-                        print(f"Trade Monitor: Market bias ({current_market_bias}) aligns for {symbol}. Checking for scale-in.")
-                        
-                        # Use the same confluence logic from trading_loop
-                        confluence_count = buys if current_market_bias == "Buy" else sells
-                        min_confluence = settings.get('min_confluence', 2)
 
-                        if confluence_count >= min_confluence:
-                            # --- This is the "execute trade" logic from trading_loop ---
-                            primary_tf = TRADING_STYLE_TIMEFRAMES.get(settings['trading_style'], ["M15"])[0]
-                            if primary_tf not in analyses or "error" in analyses[primary_tf]:
-                                print(f"Trade Monitor: Primary TF {primary_tf} analysis failed. Cannot scale-in.")
-                                continue
-
-                            primary_analysis = analyses[primary_tf]
-                            suggestion = primary_analysis['suggestion']
-                            
-                            if not suggestion or suggestion.get('entry') is None or suggestion.get('sl') is None:
-                                print(f"Trade Monitor: No valid entry/SL in suggestion. Cannot scale-in.")
-                                continue
-
-                            # --- FIX 1: ADD THIS CHECK ---
-                            if suggestion.get('action') != current_market_bias:
-                                print(f"Trade Monitor: New suggestion ({suggestion.get('action')}) mismatches current bias ({current_market_bias}). Cannot scale-in.")
-                                continue
-                            # --- END FIX 1 ---
-
-                            # (Optional check: prevent opening a new trade too close to an old one)
-                            # ... (add logic here if you want) ...
-
-                            # --- *** FIX 2: REMOVED OLD SL_PIPS LOGIC *** ---
-                            
-                            current_balance = settings['account_balance']
-                            account_info = mt5.account_info()
-                            if account_info:
-                                current_balance = account_info.balance
-
-                            # --- *** FIX 2: NEW CALL to _calculate_position_size *** ---
-                            pos_size = _calculate_position_size(
-                                current_balance, 
-                                settings['risk_per_trade'],
-                                suggestion['entry'],
-                                suggestion['sl'],
-                                symbol
-                            )
-
-                            if pos_size >= 0.01:
-                                trade_params = {
-                                    "symbol": symbol, "trade_type": current_market_bias,
-                                    "lot_size": pos_size, "sl": suggestion['sl'],
-                                    "tp": suggestion['tp'], "analysis": primary_analysis
-                                }
-                                
-                                try:
-                                    result = _execute_trade_logic(settings['mt5_credentials'], trade_params)
-                                    msg = f"Trade Monitor: SCALED-IN on {symbol}. Order {result.order}."
-                                    socketio.emit('notification', {"message": msg})
-                                    print(msg)
-                                except Exception as exec_e:
-                                    error_message = f"Trade Monitor: Scale-in execution failed for {symbol}: {exec_e}"
-                                    print(error_message)
-                                    # --- Emit error to frontend ---
-                                    socketio.emit('notification', {"message": error_message, "type": "error"})
-                            # --- End of execute trade logic ---
-
-                except Exception as e:
-                    print(f"Error in trade monitoring loop for {symbol}: {e}")
-                    traceback.print_exc()
+                except Exception as sym_e:
+                    logging.error(f"Error processing symbol {symbol} in monitoring loop: {sym_e}", exc_info=True)
 
                 if not STATE.monitoring_running: break
-            
-            # --- *** BUG FIX: Moved this *OUTSIDE* the for-loop *** ---
-            # This updates the local DB for the ML model
-            _update_trade_outcomes()
 
-        else:
-            print("Trade Monitor: MT5 not connected, skipping check.")
+            # --- Update DB Outcomes After Checking All Symbols ---
+            outcome_summary = _update_trade_outcomes()
+            logging.info(f"Trade outcome update summary: {outcome_summary}")
 
-        # Wait for 45 minutes
-        monitor_wait_time = 2700 # 45 minutes
-        print(f"Trade monitor check complete. Waiting {monitor_wait_time} seconds...")
-        time.sleep(monitor_wait_time)
-        
-    print("Trade outcome monitoring thread stopped.")
+            # --- Wait Before Next Monitoring Cycle ---
+            monitor_wait_time = 60 # Check every 60 seconds
+            logging.debug(f"Trade monitor: Check complete. Waiting {monitor_wait_time} seconds...")
+            time.sleep(monitor_wait_time)
+
+        except Exception as loop_e:
+             logging.critical(f"Critical error in main monitoring loop: {loop_e}", exc_info=True)
+             time.sleep(60) # Wait before retrying after a major error
+
+    logging.info("Trade monitoring thread stopped.")
+
 
 
 # --- API Routes ---
-# (Keep handle_settings, get_account_info, get_open_positions, get_all_symbols)
+
+# GET /api/settings - Fetch current settings
+# POST /api/settings - Update settings
 @app.route('/api/settings', methods=['GET', 'POST'])
+@login_required_api # Require login to view/change settings
 def handle_settings():
     if request.method == 'GET':
-        # Return a copy to avoid potential modification issues if state changes elsewhere
         with STATE.lock:
+            # Return a copy to prevent external modification
             current_settings = STATE.settings.copy()
+            # Ensure credentials aren't accidentally missing if empty
+            if 'mt5_credentials' not in current_settings:
+                current_settings['mt5_credentials'] = {"login": 0, "password": "", "server": "", "terminal_path": ""}
         return jsonify(current_settings)
+
     elif request.method == 'POST':
         new_settings = request.get_json()
-        if not new_settings:
+        if not new_settings or not isinstance(new_settings, dict):
             return jsonify({"error": "Invalid JSON payload"}), 400
         try:
+            # Update_settings handles validation, saving, and potential reconnect
             STATE.update_settings(new_settings)
-            # Emit updated settings to potentially update UI elements if needed
-            # socketio.emit('settings_updated', STATE.settings)
+            logging.info(f"User {current_user.id} updated settings.")
+            # Emit updated settings to all clients (optional, if UI needs live updates)
+            # with STATE.lock: socketio.emit('settings_updated', STATE.settings)
             return jsonify({"message": "Settings updated successfully."})
         except Exception as e:
-            print(f"Error updating settings: {e}")
+            logging.error(f"Error updating settings via API: {e}", exc_info=True)
             return jsonify({"error": f"Failed to update settings: {e}"}), 500
     else:
-        # Method Not Allowed
-         return jsonify({"error": "Method not allowed"}), 405
+        return jsonify({"error": "Method not allowed"}), 405
 
 
+# Get basic MT5 account info (balance, equity, profit)
 @app.route('/api/get_account_info', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def get_account_info():
-    # Credentials passed but only used by mt5_required to ensure connection *if needed*
-    creds = request.get_json()
+    # Credentials are used by the decorator to ensure connection
+    logging.debug(f"API: get_account_info called by user {current_user.id}")
     info = mt5.account_info()
     if info:
+        account_data = {"balance": info.balance, "equity": info.equity, "profit": info.profit}
+        # Emit real-time profit update (useful for dashboard)
         socketio.emit('profit_update', {'profit': info.profit})
-        return jsonify({"balance": info.balance, "equity": info.equity, "profit": info.profit})
+        logging.debug(f"API: get_account_info returning data: {account_data}")
+        return jsonify(account_data)
+    else:
+        logging.error(f"API: Could not fetch account info. Last MT5 error: {mt5.last_error()}")
+        return jsonify({"error": f"Could not fetch account info. MT5 Error: {mt5.last_error()}"}), 500
 
-    print(f"Could not fetch account info after successful connection check. Last MT5 error: {mt5.last_error()}")
-    return jsonify({"error": f"Could not fetch account info. MT5 Error: {mt5.last_error()}"}), 500
-
-
+# Get currently open MT5 positions
 @app.route('/api/get_open_positions', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def get_open_positions():
+    logging.debug(f"API: get_open_positions called by user {current_user.id}")
     positions = mt5.positions_get()
     if positions is None:
-        print(f"Failed to get positions. MT5 Error: {mt5.last_error()}")
-        return jsonify([]) # Return empty list on failure, frontend expects a list
-    # Format positions safely
+        logging.error(f"API: Failed to get positions. MT5 Error: {mt5.last_error()}")
+        return jsonify([]) # Return empty list on failure
+
     formatted_positions = []
     for p in positions:
         try:
+             # Ensure types are correct for JSON serialization
              formatted_positions.append({
-                 "ticket": int(p.ticket),
-                 "symbol": p.symbol,
-                 "type": "BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL", # Use MT5 constants
-                 "volume": float(p.volume),
-                 "price_open": float(p.price_open),
-                 "profit": float(p.profit)
-                 # Add SL and TP if needed by frontend
-                 # "sl": float(p.sl),
-                 # "tp": float(p.tp)
+                 "ticket": int(p.ticket), "symbol": p.symbol,
+                 "type": "BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL",
+                 "volume": float(p.volume), "price_open": float(p.price_open),
+                 "profit": float(p.profit), "sl": float(p.sl), "tp": float(p.tp),
+                 "magic": int(p.magic) # Include magic number
              })
         except Exception as e:
-            print(f"Error formatting position {p.ticket}: {e}")
+            logging.error(f"Error formatting position {p.ticket}: {e}", exc_info=True)
+    logging.debug(f"API: get_open_positions returning {len(formatted_positions)} positions.")
     return jsonify(formatted_positions)
 
+# Get list of available symbols from MT5
 @app.route('/api/get_all_symbols', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def get_all_symbols():
+    logging.debug(f"API: get_all_symbols called by user {current_user.id}")
     symbols = mt5.symbols_get()
     if symbols is None:
-        print(f"Failed to get symbols. MT5 Error: {mt5.last_error()}")
+        logging.error(f"API: Failed to get symbols. MT5 Error: {mt5.last_error()}")
         return jsonify({"error": f"Could not get symbols. MT5 Error: {mt5.last_error()}"}), 500
-    # Filter for visible symbols and return only names
-    visible_symbols = [s.name for s in symbols if s.visible]
+    # Return only the names of symbols marked as visible in Market Watch
+    visible_symbols = sorted([s.name for s in symbols if s.visible])
+    logging.debug(f"API: get_all_symbols returning {len(visible_symbols)} symbols.")
     return jsonify(visible_symbols)
 
-
+# Get historical chart data for a specific symbol/timeframe
 @app.route('/api/get_chart_data', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def get_chart_data():
-    print("\n--- [API LOG] /api/get_chart_data endpoint hit ---")
+    logging.debug(f"API: get_chart_data called by user {current_user.id}")
     try:
-        creds_and_params = request.get_json()
-        symbol = creds_and_params.get('symbol')
-        timeframe_str = creds_and_params.get('timeframe') # This should be 'M1', 'H1' etc.
-        print(f"[API LOG] Request Params: Symbol='{symbol}', Timeframe='{timeframe_str}'")
+        req_data = request.get_json()
+        symbol = req_data.get('symbol')
+        timeframe_str = req_data.get('timeframe') # e.g., 'H1'
+        logging.info(f"API: Requesting chart data for {symbol}/{timeframe_str}")
 
         if not symbol or not timeframe_str or timeframe_str not in TIMEFRAME_MAP:
-            print(f"[API LOG] ERROR: Invalid symbol ('{symbol}') or timeframe ('{timeframe_str}').")
+            logging.warning(f"API: Invalid symbol ('{symbol}') or timeframe ('{timeframe_str}') requested.")
             return jsonify({"error": "Invalid symbol or timeframe provided."}), 400
 
         mt5_timeframe = TIMEFRAME_MAP[timeframe_str]
-        num_bars_to_fetch = 500 # Fetch more bars for better analysis context
+        num_bars_to_fetch = 500 # Adjust number of bars as needed
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, num_bars_to_fetch)
 
         if rates is None:
             mt5_error = mt5.last_error()
-            print(f"[API LOG] ERROR: mt5.copy_rates_from_pos returned None for {symbol}/{timeframe_str}. MT5 Error: {mt5_error}")
+            logging.error(f"API: mt5.copy_rates_from_pos returned None for {symbol}/{timeframe_str}. MT5 Error: {mt5_error}")
             return jsonify({"error": f"Could not get rates for {symbol}. MT5 Error: {mt5_error}"}), 500
 
-        print(f"[API LOG] Fetched {len(rates)} rates from MT5 for {symbol}/{timeframe_str}.")
-        if len(rates) == 0:
-             print("[API LOG] ERROR: Fetched 0 rates.")
-             return jsonify({"error": f"Fetched 0 rates for {symbol}/{timeframe_str}. Is the symbol/timeframe available?"}), 400
+        logging.debug(f"API: Fetched {len(rates)} rates from MT5 for {symbol}/{timeframe_str}.")
+        if not rates:
+             logging.warning(f"API: Fetched 0 rates for {symbol}/{timeframe_str}.")
+             # Return empty list instead of error if 0 rates is valid (e.g., new symbol)
+             return jsonify([])
+             # return jsonify({"error": f"Fetched 0 rates for {symbol}/{timeframe_str}. Symbol/timeframe available?"}), 400
 
-        chart_data = []
-        none_count = 0
-        for i, bar in enumerate(rates):
-            formatted = format_bar_data(bar, timeframe_str)
-            if formatted is None:
-                none_count += 1
-                # Log only the first few failing bars to avoid flooding logs
-                if none_count <= 5:
-                    print(f"[API LOG] Failed to format bar index {i}: {bar}")
-            else:
-                chart_data.append(formatted)
+        # Format bars, filter out None results from formatting errors
+        chart_data = [bar for bar in (format_bar_data(r, timeframe_str) for r in rates) if bar is not None]
 
-        if none_count > 0:
-             print(f"[API LOG] Warning: {none_count} out of {len(rates)} bars failed to format for {symbol}/{timeframe_str}.")
+        if not chart_data and rates: # If formatting failed for all bars
+             logging.error(f"API: Failed to format any chart data for {symbol}/{timeframe_str}. Check format_bar_data logs.")
+             return jsonify({"error": f"Failed to format chart data for {symbol}/{timeframe_str}."}), 500
 
-        if not chart_data:
-             # Add more context to the error message
-             print(f"[API LOG] ERROR: No valid chart data remained after formatting for {symbol}/{timeframe_str}.")
-             return jsonify({"error": f"Failed to format any chart data for {symbol}/{timeframe_str}. Check backend logs for details."}), 500
-
-        print(f"[API LOG] Sending {len(chart_data)} formatted bars to frontend for {symbol}/{timeframe_str}.")
+        logging.info(f"API: Sending {len(chart_data)} formatted bars for {symbol}/{timeframe_str}.")
         return jsonify(chart_data)
 
     except Exception as e:
-        print(f"[API LOG] CRITICAL ERROR in get_chart_data: {e}")
-        traceback.print_exc() # Print full traceback
+        logging.critical(f"API: CRITICAL ERROR in get_chart_data: {e}", exc_info=True)
         return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
 
-
-# REMOVED DUPLICATE ROUTE DEFINITION - Keep only the first one
+# Run analysis on a single specified timeframe
 @app.route('/api/analyze_single_timeframe', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def analyze_single_timeframe():
-    """Endpoint for analyzing just the currently viewed timeframe."""
+    logging.debug(f"API: analyze_single_timeframe called by user {current_user.id}")
     try:
         data = request.get_json()
         symbol = data.get('symbol')
         timeframe = data.get('timeframe') # e.g., 'H1'
+        logging.info(f"API: Requesting single-TF analysis for {symbol}/{timeframe}")
 
         if not symbol or not timeframe or timeframe not in TIMEFRAME_MAP:
             return jsonify({"error": "Invalid symbol or timeframe provided."}), 400
 
-        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[timeframe], 0, 200)
-        if rates is None or len(rates) < 50: # Ensure enough data for analysis
-            return jsonify({"error": f"Could not fetch enough data ({len(rates) if rates else 0} bars) for {symbol} on {timeframe}."}), 400
+        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[timeframe], 0, 200) # Fetch enough for analysis
+        if rates is None or len(rates) < 50:
+            return jsonify({"error": f"Could not fetch enough data ({len(rates) if rates else 0} bars) for {symbol}/{timeframe}."}), 400
 
-        # Format data and filter errors
-        chart_data = [format_bar_data(bar, timeframe) for bar in rates]
-        chart_data = [bar for bar in chart_data if bar is not None]
+        chart_data = [bar for bar in (format_bar_data(r, timeframe) for r in rates) if bar is not None]
         if len(chart_data) < 50:
-             return jsonify({"error": f"Not enough valid data ({len(chart_data)} bars) for {symbol} on {timeframe} after formatting."}), 400
+             return jsonify({"error": f"Not enough valid data ({len(chart_data)} bars) for {symbol}/{timeframe} after formatting."}), 400
 
         df = pd.DataFrame(chart_data)
+        analysis_result = _run_single_timeframe_analysis(df, symbol) # Run the analysis logic
 
-        # Run the analysis and return the raw results
-        analysis_result = _run_single_timeframe_analysis(df, symbol)
-
+        logging.info(f"API: Completed single-TF analysis for {symbol}/{timeframe}")
         return jsonify(analysis_result)
 
     except Exception as e:
-        print(f"Single-TF Analysis Error: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error during single timeframe analysis: {e}", exc_info=True)
         return jsonify({"error": f"Error during single timeframe analysis: {e}"}), 500
 
-# --- The SECOND definition below this line was removed ---
-# @app.route('/api/analyze_single_timeframe', methods=['POST'])
-# @mt5_required
-# def analyze_single_timeframe():
-#    ... (rest of the second definition was here) ...
-
-
+# Run analysis across multiple timeframes based on trading style
 @app.route('/api/analyze_multi_timeframe', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def analyze_multi_timeframe():
-    """Endpoint for multi-timeframe analysis based on trading style (used for auto-trading)."""
+    # This might be less used if single TF analysis is preferred, but keep for potential future use
+    logging.debug(f"API: analyze_multi_timeframe called by user {current_user.id}")
     try:
         data = request.get_json()
-        style = data.get('trading_style', 'DAY_TRADING').upper()
+        style = data.get('trading_style', STATE.settings['trading_style']).upper() # Default to current setting
         symbol = data.get('symbol')
+        logging.info(f"API: Requesting multi-TF analysis for {symbol}, style {style}")
 
         if not symbol:
-             return jsonify({"error": "Symbol is required for multi-timeframe analysis."}), 400
+             return jsonify({"error": "Symbol is required."}), 400
 
-        analyses = _run_full_analysis(symbol, STATE.settings['mt5_credentials'], style)
+        creds = STATE.settings.get('mt5_credentials') # Use credentials from state
+        analyses = _run_full_analysis(symbol, creds, style)
 
         if not analyses:
-            return jsonify({"error": "Could not fetch or analyze data for any relevant timeframe."}), 400
+            return jsonify({"error": "Could not generate analysis for any relevant timeframe."}), 400
 
-        # --- Multi-Timeframe Confluence Logic ---
-        suggestions_with_details = []
-        for tf, analysis_result in analyses.items():
-            if "error" not in analysis_result and analysis_result.get('suggestion'):
-                suggestions_with_details.append({
-                    'action': analysis_result['suggestion']['action'],
-                    'confidence': analysis_result.get('confidence', 0),
-                    'predicted_rate': analysis_result.get('predicted_success_rate', "N/A"),
-                    'tf': tf
-                })
+        # --- Aggregate Results (Example) ---
+        suggestions = [(tf, a) for tf, a in analyses.items() if "error" not in a and a.get('suggestion')]
+        # ... (further processing like confluence check, final confidence, etc.) ...
+        # This part might need refinement based on how you want to present multi-TF results
 
-        if not suggestions_with_details:
-             return jsonify({"error": "No valid suggestions generated across timeframes."}), 400
-
-        buys = sum(1 for s in suggestions_with_details if s['action'] == 'Buy')
-        sells = sum(1 for s in suggestions_with_details if s['action'] == 'Sell')
-
-        # Determine overall action based on majority
-        final_action = "Neutral"
-        if buys > sells: final_action = "Buy"
-        elif sells > buys: final_action = "Sell"
-
-        # Calculate final confidence based on agreement and individual confidences/predictions
-        final_confidence_score = 0
-        if final_action != "Neutral":
-             agreeing_suggestions = [s for s in suggestions_with_details if s['action'] == final_action]
-             confluence_count = len(agreeing_suggestions)
-             base_score = 30 + (confluence_count * 20) # More agreement = higher base
-             avg_ta_confidence = sum(s['confidence'] for s in agreeing_suggestions) / confluence_count if confluence_count else 0
-             final_confidence_score = (base_score + avg_ta_confidence) / 2
-             # Optional: Factor in ML predictions from agreeing TFs if available
-             # ... (add logic here if desired)
-
-        final_confidence_score = min(max(int(final_confidence_score), 0), 100) # Clamp between 0 and 100
-
-        # Get primary timeframe suggestion details
-        timeframes = TRADING_STYLE_TIMEFRAMES.get(style, ["M15", "H1", "H4"])
-        primary_tf = next((tf for tf in timeframes if tf in analyses and "error" not in analyses[tf]), None)
-        primary_suggestion = analyses[primary_tf]['suggestion'] if primary_tf else None
-
-        # Aggregate narratives (optional, could just return primary narrative)
-        full_narrative = {tf: a.get('narrative', {}) for tf, a in analyses.items() if "error" not in a}
-
-        return jsonify({
-            "final_action": final_action,
-            "final_confidence": final_confidence_score, # Return numerical score
-            "primary_suggestion": primary_suggestion,
-            "narratives": full_narrative, # Or just analyses[primary_tf]['narrative']
-            "individual_analyses": analyses # For detailed view if needed
-        })
+        logging.info(f"API: Completed multi-TF analysis for {symbol}")
+        return jsonify({"individual_analyses": analyses}) # Return all results for now
 
     except Exception as e:
-        print(f"Multi-TF Analysis Error: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error during multi-timeframe analysis: {e}", exc_info=True)
         return jsonify({"error": f"Error during multi-timeframe analysis: {e}"}), 500
 
 
+# Run a backtest using provided historical data and settings
 @app.route('/api/run_backtest', methods=['POST'])
+@login_required_api # Requires login
 def handle_backtest():
+    logging.debug(f"API: run_backtest called by user {current_user.id}")
     data = request.get_json()
     historical_data = data.get('historical_data')
-    settings = data.get('settings') # Use settings passed from frontend for backtest params
+    settings_for_backtest = data.get('settings') # Settings specific to this backtest run
 
-    if not historical_data or not settings:
-        return jsonify({"error": "Missing historical data or settings."}), 400
-    if not isinstance(historical_data, list) or len(historical_data) == 0:
-         return jsonify({"error": "Historical data must be a non-empty list."}), 400
+    if not historical_data or not isinstance(historical_data, list) or not settings_for_backtest:
+        return jsonify({"error": "Missing or invalid historical data or settings."}), 400
 
+    logging.info(f"API: Starting backtest with {len(historical_data)} bars.")
     try:
-        # Pass settings directly to run_backtest
-        results = run_backtest(historical_data, settings)
+        results = run_backtest(historical_data, settings_for_backtest) # Pass settings
         if "error" in results:
-             return jsonify(results), 400 # Propagate errors from backtest function
+             logging.warning(f"API: Backtest function returned error: {results['error']}")
+             return jsonify(results), 400
+        logging.info(f"API: Backtest completed. Trades: {results.get('total_trades')}, PnL: {results.get('total_pnl')}")
         return jsonify(results)
     except Exception as e:
-        print(f"Error during backtest execution: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error during backtest execution: {e}", exc_info=True)
         return jsonify({"error": f"An unexpected error occurred during backtesting: {e}"}), 500
 
 
-# Add a route for manual trade execution
+# Execute a trade manually based on user input or suggestion confirmation
 @app.route('/api/execute_trade', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def handle_execute_trade():
+    logging.debug(f"API: execute_trade called by user {current_user.id}")
     trade_params = request.get_json()
-    if not trade_params:
+    if not trade_params or not isinstance(trade_params, dict):
         return jsonify({"error": "Invalid JSON payload"}), 400
 
-    required_keys = ['symbol', 'lot_size', 'trade_type', 'stop_loss', 'take_profit']
-    if not all(key in trade_params for key in required_keys):
-        return jsonify({"error": "Missing required trade parameters (symbol, lot_size, trade_type, stop_loss, take_profit)"}), 400
+    required = ['symbol', 'lot_size', 'trade_type', 'stop_loss', 'take_profit']
+    if not all(k in trade_params for k in required):
+        return jsonify({"error": f"Missing required parameters: {required}"}), 400
 
     try:
-        # Ensure numeric types are correct
-        trade_params['lot_size'] = float(trade_params['lot_size'])
-        trade_params['sl'] = float(trade_params['stop_loss']) # Use 'sl'/'tp' keys for execution logic
-        trade_params['tp'] = float(trade_params['take_profit'])
-        trade_params['analysis'] = trade_params.get('analysis', {}) # Include analysis if sent
+        # Prepare parameters for the execution logic
+        params_for_exec = {
+            'symbol': str(trade_params['symbol']),
+            'lot_size': float(trade_params['lot_size']),
+            'trade_type': str(trade_params['trade_type']).upper(),
+            'sl': float(trade_params['stop_loss']) if trade_params['stop_loss'] else 0.0,
+            'tp': float(trade_params['take_profit']) if trade_params['take_profit'] else 0.0,
+            'analysis': trade_params.get('analysis', {}) # Include analysis context if provided
+        }
 
-        if trade_params['lot_size'] <= 0:
-             raise ValueError("Lot size must be positive.")
+        if params_for_exec['lot_size'] <= 0: raise ValueError("Lot size must be positive.")
+        if params_for_exec['trade_type'] not in ['BUY', 'SELL']: raise ValueError("trade_type must be BUY or SELL.")
 
-        # Use credentials from global state (safer than passing from frontend every time)
-        creds = STATE.settings['mt5_credentials']
+        creds = STATE.settings.get('mt5_credentials') # Use stored credentials
+        result = _execute_trade_logic(creds, params_for_exec) # Execute the trade
 
-        result = _execute_trade_logic(creds, trade_params)
-
+        logging.info(f"API: Manual trade executed successfully. Order ID: {result.order}")
         return jsonify({
             "message": "Trade executed successfully!",
-            "details": {
-                "order_id": result.order,
-                "symbol": trade_params['symbol'],
-                "type": trade_params['trade_type'],
-                "volume": trade_params['lot_size']
-            }
+            "details": { "order_id": result.order, "symbol": result.request.symbol, "type": params_for_exec['trade_type'], "volume": result.volume }
         })
-    except ValueError as ve: # Catch specific input errors
-        print(f"ValueError during trade execution: {ve}")
+    except ValueError as ve:
+        logging.warning(f"API: Invalid trade parameters: {ve}")
         return jsonify({"error": str(ve)}), 400
     except ConnectionError as ce:
-        print(f"ConnectionError during trade execution: {ce}")
-        return jsonify({"error": str(ce)}), 503 # Service unavailable
+        logging.error(f"API: MT5 Connection error during trade execution: {ce}")
+        return jsonify({"error": str(ce)}), 503
     except Exception as e:
-        print(f"Error executing manual trade: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error executing manual trade: {e}", exc_info=True)
         return jsonify({"error": f"Failed to execute trade: {e}"}), 500
 
-
-# --- Add Routes for Auto-Trading Control ---
+# Start the auto-trading background thread
 @app.route('/api/start_autotrade', methods=['POST'])
+@mt5_required # Requires login and MT5 connection
 def handle_start_autotrade():
-    # Ensure MT5 is connected before starting
-    if not mt5_manager.is_initialized:
-        if not mt5_manager.connect(STATE.settings['mt5_credentials']):
-             return jsonify({"error": "Cannot start auto-trading: MT5 connection failed."}), 503
-
+    logging.info(f"API: start_autotrade called by user {current_user.id}")
     if STATE.autotrade_running:
+        logging.info("API: Auto-trading already running.")
         return jsonify({"message": "Auto-trading is already running."}), 200
 
-    # Update the setting to ensure consistency
+    # Update setting first
     STATE.update_settings({"auto_trading_enabled": True})
 
     with STATE.lock: # Ensure thread-safe start
-        # Check again inside lock
         if not STATE.autotrade_running:
              STATE.autotrade_running = True
-             # Ensure the thread is only created if it doesn't exist or isn't alive
+             # Start only if thread doesn't exist or is not alive
              if STATE.autotrade_thread is None or not STATE.autotrade_thread.is_alive():
                  STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
                  STATE.autotrade_thread.start()
-                 print("Started auto-trading thread.")
+                 logging.info("Started auto-trading thread.")
                  return jsonify({"message": "Auto-trading started."})
              else:
-                  print("Auto-trading thread already exists and is alive.")
+                  logging.warning("API: Start requested, but thread already exists and is alive.")
                   return jsonify({"message": "Auto-trading is already running (thread active)."}), 200
         else:
-             # This case should ideally not be hit due to the outer check, but good for safety
+             # This case means it was started between the outer check and acquiring the lock
+             logging.info("API: Start requested, but auto-trading was already running (race condition).")
              return jsonify({"message": "Auto-trading was already running."}), 200
 
-
+# Stop the auto-trading background thread
 @app.route('/api/stop_autotrade', methods=['POST'])
+@login_required_api # Requires login
 def handle_stop_autotrade():
-    if not STATE.autotrade_running:
+    logging.info(f"API: stop_autotrade called by user {current_user.id}")
+    if not STATE.autotrade_running and (STATE.autotrade_thread is None or not STATE.autotrade_thread.is_alive()):
+        logging.info("API: Auto-trading is already stopped.")
         return jsonify({"message": "Auto-trading is not running."}), 200
 
-    print("Received request to stop auto-trading...")
-    # Update the setting first
+    logging.info("API: Stopping auto-trading...")
+    # Update setting first to prevent loop continuation if it checks mid-stop
     STATE.update_settings({"auto_trading_enabled": False})
 
+    # Signal the loop to stop and wait for it
+    thread_to_join = None
     with STATE.lock:
-        STATE.autotrade_running = False # Signal the loop to stop
+        STATE.autotrade_running = False
+        thread_to_join = STATE.autotrade_thread # Get reference while holding lock
 
-    # Wait briefly for the thread to potentially exit its current loop iteration
-    thread_to_join = STATE.autotrade_thread # Get ref before setting to None
     if thread_to_join and thread_to_join.is_alive():
-        print("Waiting for auto-trading thread to stop...")
-        thread_to_join.join(timeout=5.0) # Wait up to 5 seconds
+        logging.info("API: Waiting for auto-trading thread to finish current cycle...")
+        thread_to_join.join(timeout=10.0) # Wait up to 10 seconds
         if thread_to_join.is_alive():
-            print("Warning: Auto-trading thread did not stop gracefully within timeout.")
+            logging.warning("API: Auto-trading thread did not stop gracefully within timeout.")
+            # Depending on strictness, you might want to prevent clearing the thread ref here
         else:
-            print("Auto-trading thread stopped.")
-            STATE.autotrade_thread = None # Clear the thread reference only if stopped
+            logging.info("API: Auto-trading thread stopped successfully.")
+            with STATE.lock: STATE.autotrade_thread = None # Clear ref only if stopped
     else:
-        print("Auto-trading thread was not running or already stopped.")
-        STATE.autotrade_thread = None # Clear ref if it wasn't running
+        logging.info("API: Auto-trading thread was not running or already stopped.")
+        with STATE.lock: STATE.autotrade_thread = None # Ensure ref is cleared
 
     return jsonify({"message": "Auto-trading stopped."})
 
 
-# --- New Chat Endpoint ---
+# Handle chat messages with Gemini AI
 @app.route('/api/chat', methods=['POST'])
+@login_required_api # Requires login
 def handle_chat():
+    logging.debug(f"API: chat called by user {current_user.id}")
     if not GEMINI_API_KEY:
-        return jsonify({"error": "Gemini API key not configured."}), 500
+        return jsonify({"error": "Gemini AI is not configured on the server."}), 503
 
     try:
         data = request.get_json()
         user_message = data.get('message')
         analysis_context = data.get('analysis_context')
-        chat_history = data.get('history', []) # Expecting a list of {"role": "user/model", "parts": ["message"]}
+        # Ensure history is a list of correctly formatted message objects
+        chat_history_raw = data.get('history', [])
+        chat_history = []
+        if isinstance(chat_history_raw, list):
+             for msg in chat_history_raw:
+                 if isinstance(msg, dict) and 'role' in msg and 'parts' in msg:
+                     # Gemini expects parts to be a list of strings
+                     parts_text = msg['parts'] if isinstance(msg['parts'], str) else str(msg.get('parts', ''))
+                     chat_history.append({"role": msg['role'], "parts": [parts_text]})
+
 
         if not user_message or not analysis_context:
-            return jsonify({"error": "Missing message or analysis context."}), 400
+            return jsonify({"error": "Missing user message or analysis context."}), 400
 
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash') # Or 'gemini-pro'
+        # Start chat with potentially processed history
         chat = model.start_chat(history=chat_history)
-        
-        # Construct a more detailed prompt for the chat
+
+        # Construct a clear prompt including context and history (implicitly handled by start_chat)
         prompt = f"""
-        You are a trading assistant AI named Zenith. A user is asking a question about a market analysis you have performed.
-        
         **Analysis Context:**
-        {json.dumps(analysis_context, indent=2)}
+        ```json
+        {json.dumps(analysis_context, indent=1)}
+        ```
 
-        **User's Question:**
-        "{user_message}"
+        **User's Question:** {user_message}
 
-        **Instructions:**
-        - Answer the user's question concisely and directly, based *only* on the provided analysis context.
-        - Do not give financial advice.
-        - Maintain the persona of Zenith, a helpful and knowledgeable trading AI.
-        - If the question is outside the scope of the analysis, politely state that you can only answer questions about the current chart analysis.
+        **Your Task:** Answer the user's question concisely based *only* on the provided analysis context. You are Zenith, an AI trading assistant. Do not give financial advice. If the question is outside the scope, state that.
         """
-        
+
+        logging.info(f"API: Sending prompt to Gemini for user {current_user.id}")
         response = chat.send_message(prompt)
+
+        logging.debug(f"API: Received Gemini response: {response.text[:100]}...") # Log beginning of response
         return jsonify({"reply": response.text})
 
     except Exception as e:
-        print(f"Error in chat endpoint: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error in chat endpoint: {e}", exc_info=True)
         return jsonify({"error": f"An error occurred in the chat service: {e}"}), 500
 
 
-# --- New Model Training Endpoint ---
+# Manually trigger the update of trade outcomes in the DB
 @app.route('/api/force_outcome_update', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def handle_force_outcome_update():
-    """
-    Manually triggers the trade outcome check and returns a detailed summary.
-    Accepts a JSON body with `ignore_magic_number: true` to update all trades.
-    """
+    logging.info(f"API: force_outcome_update called by user {current_user.id}")
     try:
         data = request.get_json() or {}
         ignore_magic = data.get('ignore_magic_number', False)
-
-        print(f"Manual trade outcome update triggered via API. Ignore Magic: {ignore_magic}")
+        logging.info(f"Manual trade outcome update triggered. Ignore Magic Number: {ignore_magic}")
         summary = _update_trade_outcomes(ignore_magic_number=ignore_magic)
         return jsonify(summary)
     except Exception as e:
-        print(f"Error during manual outcome update: {e}")
-        traceback.print_exc()
+        logging.error(f"API: Error during manual outcome update: {e}", exc_info=True)
         return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
-
+# Trigger the retraining of the ML model
 @app.route('/api/train_model', methods=['POST'])
+@login_required_api # Requires login
 def handle_train_model():
-    """Endpoint to trigger model training from historical data."""
+    logging.info(f"API: train_model called by user {current_user.id}")
+    conn = None
     try:
-        # Connect to the database and fetch all trades
         conn = sqlite3.connect('trades.db', check_same_thread=False)
-        # Make the cursor return rows as dictionaries
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
-        cursor.execute("SELECT outcome, analysis_json FROM trades WHERE outcome != -1 AND analysis_json IS NOT NULL")
+        # Select only necessary columns and filter for completed trades with analysis
+        cursor.execute("SELECT outcome, analysis_json FROM trades WHERE outcome IN (0, 1) AND analysis_json IS NOT NULL AND analysis_json != ''")
         trades_data = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        logging.info(f"Fetched {len(trades_data)} completed trades from DB for training.")
 
-        print(f"Fetched {len(trades_data)} trades from DB for training.")
+        if not trades_data or len(trades_data) < 10: # Ensure minimum data
+            return jsonify({"error": f"Not enough training data available ({len(trades_data)} records found, need at least 10)."}), 400
 
-        if not trades_data:
-            return jsonify({"error": "No training data available in the database."}), 400
-
-        # Call the training function from learning.py
-        result = train_and_save_model(trades_data)
+        # Run training in a separate thread to avoid blocking the API request
+        # This requires careful state management if you need immediate feedback beyond "started"
+        # For simplicity now, run synchronously but inform user it might take time
+        logging.info("Starting model training synchronously...")
+        result = train_and_save_model(trades_data) # This function should handle errors internally
 
         if "error" in result:
-            # If training failed, return the error message
+            logging.error(f"Model training failed: {result['error']}")
             return jsonify(result), 400
         else:
-            # --- IMPORTANT: Reload the model into the app state after successful training ---
-            print("Training successful. Reloading model and vectorizer into application state...")
+            logging.info(f"Model training successful. Accuracy: {result.get('accuracy', 'N/A')}")
+            # --- Reload Model into State ---
+            logging.info("Reloading model and vectorizer into application state...")
             STATE.ml_model, STATE.ml_vectorizer = get_model_and_vectorizer()
-            if STATE.ml_model is not None and STATE.ml_vectorizer is not None:
-                print("Model reloaded successfully.")
+            if STATE.ml_model and STATE.ml_vectorizer:
+                logging.info("Model reloaded successfully.")
+                # Optionally emit an event if clients need to know model updated
+                # socketio.emit('model_updated', {'accuracy': result.get('accuracy')})
                 return jsonify(result)
             else:
-                print("Critical Error: Model trained but failed to reload into state.")
-                return jsonify({"error": "Model trained but failed to load. Please restart the server."}), 500
+                logging.critical("CRITICAL ERROR: Model trained but failed to reload into state.")
+                return jsonify({"error": "Model trained but failed to load. Please restart server."}), 500
 
     except sqlite3.Error as db_e:
-        print(f"Database error during model training: {db_e}")
+        logging.error(f"Database error during model training trigger: {db_e}", exc_info=True)
         return jsonify({"error": f"Database error: {db_e}"}), 500
     except Exception as e:
-        print(f"An unexpected error occurred during model training: {e}")
-        traceback.print_exc()
+        logging.error(f"Unexpected error during model training trigger: {e}", exc_info=True)
         return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
+    finally:
+        if conn: conn.close()
 
 
+# Get daily trading statistics based on MT5 history
 @app.route('/api/get_daily_stats', methods=['POST'])
-@mt5_required
+@mt5_required # Requires login and MT5 connection
 def get_daily_stats():
-    """
-    Calculates and returns trading statistics for the current day
-    based on the trade history from MT5.
-    """
-    logging.info("--- /api/get_daily_stats endpoint hit ---")
+    logging.info(f"API: get_daily_stats called by user {current_user.id}")
     try:
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        logging.info(f"Fetching deals from {today} to now.")
-
-        history_deals = mt5.history_deals_get(today, datetime.now())
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        logging.debug(f"Fetching deals from {today_start} to now.")
+        history_deals = mt5.history_deals_get(today_start, datetime.now())
 
         if history_deals is None:
-            error_msg = f"Could not get trade history from MT5. Error: {mt5.last_error()}"
-            logging.error(error_msg)
-            return jsonify({"error": error_msg, "deals_found": 0}), 500
+            raise ConnectionError(f"Could not get trade history. MT5 Error: {mt5.last_error()}")
 
-        logging.info(f"Found {len(history_deals)} total deals in MT5 history for today.")
+        logging.info(f"Found {len(history_deals)} total deals today.")
+        # Filter for *closing* deals made by the bot
+        closed_bot_deals = [d for d in history_deals if d.entry == 1 and d.magic == 234000] # entry=1 is DEAL_ENTRY_OUT
+        logging.info(f"Found {len(closed_bot_deals)} closed bot deals today.")
 
-        # Filter for deals that are closing trades (entry type 'OUT' or 'OUT_BY') and belong to the bot
-        # DEAL_ENTRY_OUT = 1 (Normal close)
-        # DEAL_ENTRY_INOUT = 2 (Reversal, which closes the previous position)
-        # DEAL_ENTRY_OUT_BY = 3 (Closed by Stop Loss or Take Profit)
-        closed_trades = [d for d in history_deals if d.entry in (1, 2, 3) and d.magic == 234000]
-        logging.info(f"Filtered down to {len(closed_trades)} closed bot trades.")
-
-        # Log details of all found deals for debugging
-        if len(history_deals) > 0:
-            logging.debug("--- All Deals Found Today ---")
-            for d in history_deals:
-                 logging.debug(f"  - Deal Ticket: {d.ticket}, Order: {d.order}, Symbol: {d.symbol}, Type: {d.type}, Entry: {d.entry}, Magic: {d.magic}, Profit: {d.profit}")
-            logging.debug("-----------------------------")
-
-        total_trades = len(closed_trades)
+        total_trades = len(closed_bot_deals)
         if total_trades == 0:
-            logging.info("No closed bot trades found for today. Returning zero stats.")
-            return jsonify({
-                "trades": 0, "won": 0, "lost": 0,
-                "winRate": "0%", "dailyPnl": 0.0,
-                "message": "No closed trades recorded for the bot today.",
-                "deals_found": len(history_deals)
-            })
+            stats = {"trades": 0, "won": 0, "lost": 0, "winRate": "0%", "dailyPnl": 0.0}
+            logging.debug("Returning zero stats as no closed bot trades found.")
+            return jsonify(stats)
 
-        trades_won = sum(1 for d in closed_trades if d.profit >= 0)
+        trades_won = sum(1 for d in closed_bot_deals if d.profit >= 0)
         trades_lost = total_trades - trades_won
-        win_rate = (trades_won / total_trades) * 100 if total_trades > 0 else 0
-        total_pnl = sum(d.profit for d in closed_trades)
+        win_rate = (trades_won / total_trades) * 100
+        total_pnl = sum(d.profit for d in closed_bot_deals)
 
         stats = {
-            "trades": total_trades,
-            "won": trades_won,
-            "lost": trades_lost,
-            "winRate": f"{win_rate:.1f}%",
-            "dailyPnl": total_pnl,
-            "deals_found": len(history_deals)
+            "trades": total_trades, "won": trades_won, "lost": trades_lost,
+            "winRate": f"{win_rate:.1f}%", "dailyPnl": round(total_pnl, 2)
         }
-        logging.info(f"Calculated stats: {stats}")
+        logging.info(f"Calculated daily stats: {stats}")
+        # Optionally emit update via socket
+        # socketio.emit('daily_stats_update', stats)
         return jsonify(stats)
 
+    except ConnectionError as ce:
+        logging.error(f"API: MT5 connection error getting daily stats: {ce}")
+        return jsonify({"error": str(ce)}), 503
     except Exception as e:
-        logging.critical(f"CRITICAL ERROR in get_daily_stats: {e}", exc_info=True)
+        logging.critical(f"API: CRITICAL ERROR in get_daily_stats: {e}", exc_info=True)
         return jsonify({"error": "An unexpected server error occurred."}), 500
 
-# --- SocketIO Events ---
+
+# --- SocketIO Event Handlers ---
 @socketio.on('connect')
 def handle_connect():
-    print('Client connected:', request.sid)
+    # User isn't necessarily logged in yet at this point via Flask-Login
+    logging.info(f'Socket client connected: {request.sid}')
+    # You could potentially check for session cookies here if needed immediately
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print('Client disconnected:', request.sid)
+    logging.info(f'Socket client disconnected: {request.sid}')
 
-# Example of a potential subscription event (not fully implemented in frontend yet)
 @socketio.on('subscribe_to_chart')
 def handle_subscribe(data):
+    # Here you might want to verify if the user is logged in before proceeding
+    # For now, just log the subscription attempt
     sid = request.sid
-    symbol = data.get('symbol')
-    tf = data.get('timeframe')
-    print(f"Client {sid} subscribing to {symbol} {tf}")
-    # Here you would add logic to start sending real-time updates for this symbol/tf
-    # Maybe join a room: join_room(f"{symbol}_{tf}")
+    symbol = data.get('symbol', 'N/A')
+    tf = data.get('timeframe', 'N/A')
+    logging.info(f"Client {sid} attempting to subscribe to {symbol} {tf}")
+    # TODO: Add logic to actually start sending data if authenticated
+    # Example: Check current_user.is_authenticated
 
 @socketio.on('unsubscribe_from_chart')
 def handle_unsubscribe(data):
-     sid = request.sid
-     symbol = data.get('symbol')
-     tf = data.get('timeframe')
-     print(f"Client {sid} unsubscribing from {symbol} {tf}")
-     # Leave the room: leave_room(f"{symbol}_{tf}")
+    sid = request.sid
+    symbol = data.get('symbol', 'N/A')
+    tf = data.get('timeframe', 'N/A')
+    logging.info(f"Client {sid} unsubscribing from {symbol} {tf}")
+    # TODO: Add logic to stop sending data
 
-
-# --- Main Execution ---
+# --- Main Execution Block ---
 if __name__ == '__main__':
-    init_db()
-    STATE.load_settings()
+    init_db() # Create DB tables if they don't exist
+    STATE.load_settings() # Load settings from file and attempt initial MT5 connect
 
     # --- Start Background Threads ---
-    # 1. Start Trade Outcome Monitoring
+    # 1. Trade Monitoring (Always runs if app is running)
     if not STATE.monitoring_running:
         STATE.monitoring_running = True
         STATE.monitoring_thread = threading.Thread(target=trade_monitoring_loop, daemon=True)
         STATE.monitoring_thread.start()
-        print("Started trade outcome monitoring thread.")
+        logging.info("Started trade monitoring thread.")
 
-    # 2. Start Auto-Trading Loop (if enabled in settings)
+    # 2. Auto-Trading (Starts only if enabled in settings AND MT5 connected)
     if STATE.settings.get('auto_trading_enabled') and not STATE.autotrade_running:
         if mt5_manager.is_initialized:
             with STATE.lock:
-                if not STATE.autotrade_running:
+                if not STATE.autotrade_running: # Double check inside lock
                     STATE.autotrade_running = True
                     STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
                     STATE.autotrade_thread.start()
-                    print("Auto-trading started based on loaded settings.")
+                    logging.info("Auto-trading thread started based on loaded settings.")
         else:
-            print("Auto-trading enabled in settings, but MT5 connection failed on startup. Loop not started.")
+            logging.warning("Auto-trading enabled in settings, but MT5 connection failed on startup. Auto-trade loop NOT started.")
+    elif STATE.settings.get('auto_trading_enabled') and STATE.autotrade_running:
+         logging.info("Auto-trading thread already running from a previous start.")
 
-    print(f"Starting Flask-SocketIO server on http://0.0.0.0:5000")
+
+    # --- Run Flask App with SocketIO ---
+    host = '0.0.0.0' # Listen on all available network interfaces
+    port = 5000
+    logging.info(f"Starting Flask-SocketIO server on http://{host}:{port}")
     try:
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+        # use_reloader=False is important when using threads like this
+        # debug=False is recommended for stability, rely on logging instead
+        socketio.run(app, host=host, port=port, debug=False, use_reloader=False)
+    except KeyboardInterrupt:
+         logging.info("Keyboard interrupt received, shutting down...")
+    except Exception as e:
+         logging.critical(f"Server crashed: {e}", exc_info=True)
     finally:
-        print("Flask app shutting down...")
-        # Signal threads to stop
+        logging.info("Flask app shutting down...")
+        # Signal threads to stop gracefully
         STATE.autotrade_running = False
         STATE.monitoring_running = False
-        # Shut down MT5 connection
+        # Optional: Wait briefly for threads to potentially finish
+        # if STATE.autotrade_thread and STATE.autotrade_thread.is_alive():
+        #     STATE.autotrade_thread.join(timeout=2)
+        # if STATE.monitoring_thread and STATE.monitoring_thread.is_alive():
+        #     STATE.monitoring_thread.join(timeout=2)
+        # Ensure MT5 connection is closed
         mt5_manager.shutdown_mt5()
+        logging.info("Shutdown complete.")

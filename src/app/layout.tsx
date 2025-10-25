@@ -1,9 +1,11 @@
+// src/app/layout.tsx
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
 import { AlertProvider } from "@/context/AlertContext";
 import AlertModal from "@/components/AlertModal";
+import SessionProviderWrapper from "@/context/SessionProviderWrapper"; // Import the wrapper
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -20,11 +22,14 @@ export default function RootLayout({
   return (
     <html lang="en" className="bg-background text-foreground">
       <body className={inter.className}>
-        <AlertProvider>
-          <Navbar />
-          {children}
-          <AlertModal />
-        </AlertProvider>
+        {/* Wrap everything inside SessionProviderWrapper */}
+        <SessionProviderWrapper>
+          <AlertProvider>
+            <Navbar />
+            {children}
+            <AlertModal />
+          </AlertProvider>
+        </SessionProviderWrapper>
       </body>
     </html>
   );

@@ -10,3 +10,10 @@ gevent-websocket
 pandas-ta
 google-generativeai
 python-dotenv
+# Add these lines for authentication
+Flask-SQLAlchemy
+Flask-Login
+Flask-Bcrypt
+google-auth
+google-auth-oauthlib
+Werkzeug
