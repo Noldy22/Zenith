@@ -6,10 +6,10 @@ import 'react-toastify/dist/ReactToastify.css';
 
 // --- Zenith/Shadcn UI Components ---
 import { Button } from '@/components/ui/button';
-import { 
-  Card, 
-  CardContent, 
-  CardHeader, 
+import {
+  Card,
+  CardContent,
+  CardHeader,
   CardTitle,
   CardDescription,
   CardFooter
@@ -59,21 +59,24 @@ const SettingsPage = () => {
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isTraining, setIsTraining] = useState(false);
-    
+
     // State for the comma-separated string for the pairs input
     const [pairsInput, setPairsInput] = useState('');
 
     useEffect(() => {
         const fetchSettings = async () => {
             setIsLoading(true);
+            const backendUrl = getBackendUrl(); // Get URL
+            const fetchUrl = `${backendUrl}/api/settings`;
+            console.log("SettingsPage fetching from:", fetchUrl); // <<< ADDED LOGGING
             try {
-                const response = await fetch(`${getBackendUrl()}/api/settings`);
+                const response = await fetch(fetchUrl);
                 if (response.ok) {
                     const data = await response.json();
-                    
+
                     // --- Data Sanitization ---
                     data.pairs_to_trade = Array.isArray(data.pairs_to_trade) ? data.pairs_to_trade : [];
-                    
+
                     if (data.mt5_credentials) {
                         data.mt5_credentials.login = String(data.mt5_credentials.login || "");
                         data.mt5_credentials.password = data.mt5_credentials.password || "";
@@ -82,7 +85,7 @@ const SettingsPage = () => {
                     } else {
                         data.mt5_credentials = defaultSettings.mt5_credentials;
                     }
-                    
+
                     setSettings({ ...defaultSettings, ...data }); // Merge with defaults
                     setPairsInput(data.pairs_to_trade.join(', '));
                 } else {
@@ -90,7 +93,8 @@ const SettingsPage = () => {
                     toast.error(`Error fetching settings: ${errorData.error || response.statusText}`);
                 }
             } catch (error) {
-                console.error("Fetch settings error:", error);
+                console.error("Fetch settings error in SettingsPage:", error); // <<< ADDED CONSOLE ERROR
+                console.error("Failed URL was:", fetchUrl); // <<< ADDED CONSOLE ERROR
                 toast.error("Backend server might not be running or reachable.");
             } finally {
                 setIsLoading(false);
@@ -100,7 +104,7 @@ const SettingsPage = () => {
     }, []);
 
     // --- Component-Specific Handlers ---
-    
+
     // Generic handler for simple Input and Select changes
     const handleChange = (name: string, value: string | number) => {
         const keys = name.split('.');
@@ -119,7 +123,7 @@ const SettingsPage = () => {
             }));
         }
     };
-    
+
     // Handler for Switch components
     const handleSwitchChange = (name: keyof Settings) => (checked: boolean) => {
         setSettings(prev => ({
@@ -146,7 +150,7 @@ const SettingsPage = () => {
     const handleSaveSettings = async () => {
         setIsSaving(true);
         toast.info("Saving settings...");
-        
+
         const pairsArray = pairsInput.split(',')
                                     .map(pair => pair.trim().toUpperCase())
                                     .filter(pair => pair !== '');
@@ -156,8 +160,12 @@ const SettingsPage = () => {
             pairs_to_trade: pairsArray,
         };
 
+        const backendUrl = getBackendUrl();
+        const saveUrl = `${backendUrl}/api/settings`;
+        console.log("SettingsPage saving to:", saveUrl); // Log save URL
+
         try {
-            const response = await fetch(`${getBackendUrl()}/api/settings`, {
+            const response = await fetch(saveUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settingsToSave),
@@ -171,6 +179,7 @@ const SettingsPage = () => {
             }
         } catch (error) {
             console.error("Save settings error:", error);
+            console.error("Failed save URL was:", saveUrl); // Log failed save URL
             toast.error("Error connecting to backend.");
         } finally {
             setIsSaving(false);
@@ -180,8 +189,11 @@ const SettingsPage = () => {
     const handleTrainModel = async () => {
         setIsTraining(true);
         toast.info("Starting model training... This may take a moment.");
+        const backendUrl = getBackendUrl();
+        const trainUrl = `${backendUrl}/api/train_model`;
+        console.log("SettingsPage triggering model training at:", trainUrl); // Log train URL
         try {
-            const response = await fetch(`${getBackendUrl()}/api/train_model`, {
+            const response = await fetch(trainUrl, {
                 method: 'POST',
             });
             const result = await response.json();
@@ -192,6 +204,7 @@ const SettingsPage = () => {
             }
         } catch (error) {
             console.error("Train model error:", error);
+            console.error("Failed train URL was:", trainUrl); // Log failed train URL
             toast.error("Error connecting to backend for training.");
         } finally {
             setIsTraining(false);
@@ -210,7 +223,7 @@ const SettingsPage = () => {
             </h1>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
+
                 {/* General Settings */}
                 <Card>
                     <CardHeader>
@@ -219,8 +232,8 @@ const SettingsPage = () => {
                     <CardContent className="space-y-6">
                         <div className="space-y-2">
                             <Label htmlFor="trading_style">Trading Style</Label>
-                            <Select 
-                                value={settings.trading_style} 
+                            <Select
+                                value={settings.trading_style}
                                 onValueChange={(value) => handleChange("trading_style", value)}
                             >
                                 <SelectTrigger id="trading_style">
@@ -236,21 +249,21 @@ const SettingsPage = () => {
                         </div>
                         <div className="space-y-2">
                             <Label>Risk Per Trade: {Number(settings.risk_per_trade).toFixed(1)}%</Label>
-                            <Slider 
-                                value={[settings.risk_per_trade]} 
+                            <Slider
+                                value={[settings.risk_per_trade]}
                                 onValueChange={handleSliderChange("risk_per_trade")}
                                 min={0.1} max={10} step={0.1}
                             />
                         </div>
                          <div className="space-y-2">
                             <Label>Max Daily Loss: {Number(settings.max_daily_loss).toFixed(1)}%</Label>
-                            <Slider 
+                            <Slider
                                 value={[settings.max_daily_loss]}
                                 onValueChange={handleSliderChange("max_daily_loss")}
                                 min={1} max={20} step={0.5}
                             />
                         </div>
-                        {/* REMOVED "Account Balance" input as requested. 
+                        {/* REMOVED "Account Balance" input as requested.
                           It's now fetched automatically on the dashboard.
                         */}
                     </CardContent>
@@ -264,27 +277,27 @@ const SettingsPage = () => {
                     <CardContent className="space-y-6">
                         <div className="flex items-center justify-between space-x-2">
                             <Label htmlFor="auto_trading_enabled">Auto-Trading Enabled</Label>
-                            <Switch 
+                            <Switch
                                 id="auto_trading_enabled"
-                                checked={settings.auto_trading_enabled} 
-                                onCheckedChange={handleSwitchChange("auto_trading_enabled")} 
+                                checked={settings.auto_trading_enabled}
+                                onCheckedChange={handleSwitchChange("auto_trading_enabled")}
                             />
                         </div>
                         <div className="flex items-center justify-between space-x-2">
                             <Label htmlFor="notifications_enabled">Notifications Enabled</Label>
-                            <Switch 
+                            <Switch
                                 id="notifications_enabled"
-                                checked={settings.notifications_enabled} 
+                                checked={settings.notifications_enabled}
                                 onCheckedChange={handleSwitchChange("notifications_enabled")}
                             />
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="min_confluence">Minimum Confluence Signals</Label>
-                            <Input 
-                                id="min_confluence" 
-                                type="number" 
-                                value={settings.min_confluence} 
-                                onChange={(e) => handleChange("min_confluence", parseInt(e.target.value))} 
+                            <Input
+                                id="min_confluence"
+                                type="number"
+                                value={settings.min_confluence}
+                                onChange={(e) => handleChange("min_confluence", parseInt(e.target.value))}
                                 min="1" max="4"
                             />
                         </div>
@@ -344,40 +357,40 @@ const SettingsPage = () => {
                         {/* Breakeven */}
                         <div className="flex items-center justify-between space-x-2">
                             <Label htmlFor="breakeven_enabled">Enable Breakeven</Label>
-                            <Switch 
-                                id="breakeven_enabled" 
+                            <Switch
+                                id="breakeven_enabled"
                                 checked={settings.breakeven_enabled}
                                 onCheckedChange={handleSwitchChange("breakeven_enabled")}
                             />
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="breakeven_pips">Breakeven Trigger (Pips)</Label>
-                            <Input 
+                            <Input
                                 id="breakeven_pips"
-                                type="number" 
-                                value={settings.breakeven_pips} 
-                                onChange={(e) => handleChange("breakeven_pips", parseInt(e.target.value))} 
-                                disabled={!settings.breakeven_enabled} 
+                                type="number"
+                                value={settings.breakeven_pips}
+                                onChange={(e) => handleChange("breakeven_pips", parseInt(e.target.value))}
+                                disabled={!settings.breakeven_enabled}
                             />
                         </div>
 
                         {/* Trailing Stop */}
                         <div className="flex items-center justify-between space-x-2">
                             <Label htmlFor="trailing_stop_enabled">Enable Trailing Stop</Label>
-                            <Switch 
-                                id="trailing_stop_enabled" 
+                            <Switch
+                                id="trailing_stop_enabled"
                                 checked={settings.trailing_stop_enabled}
                                 onCheckedChange={handleSwitchChange("trailing_stop_enabled")}
                             />
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="trailing_stop_pips">Trailing Stop Distance (Pips)</Label>
-                            <Input 
+                            <Input
                                 id="trailing_stop_pips"
-                                type="number" 
-                                value={settings.trailing_stop_pips} 
-                                onChange={(e) => handleChange("trailing_stop_pips", parseInt(e.target.value))} 
-                                disabled={!settings.trailing_stop_enabled} 
+                                type="number"
+                                value={settings.trailing_stop_pips}
+                                onChange={(e) => handleChange("trailing_stop_pips", parseInt(e.target.value))}
+                                disabled={!settings.trailing_stop_enabled}
                             />
                         </div>
 
@@ -386,8 +399,8 @@ const SettingsPage = () => {
                             <Label htmlFor="proactive_close_enabled" className="text-foreground">
                                 Enable Proactive Close
                             </Label>
-                            <Switch 
-                                id="proactive_close_enabled" 
+                            <Switch
+                                id="proactive_close_enabled"
                                 checked={settings.proactive_close_enabled}
                                 onCheckedChange={handleSwitchChange("proactive_close_enabled")}
                             />
@@ -404,16 +417,16 @@ const SettingsPage = () => {
 
             {/* Actions Footer */}
             <div className="mt-6 flex justify-center items-center space-x-4">
-                <Button 
-                    size="lg" 
-                    onClick={handleSaveSettings} 
+                <Button
+                    size="lg"
+                    onClick={handleSaveSettings}
                     disabled={isSaving || isTraining}
                 >
                     {isSaving ? "Saving..." : "Save Settings"}
                 </Button>
-                <Button 
-                    size="lg" 
-                    variant="secondary" 
+                <Button
+                    size="lg"
+                    variant="secondary"
                     onClick={handleTrainModel}
                     disabled={isSaving || isTraining}
                 >

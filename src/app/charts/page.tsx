@@ -100,7 +100,10 @@ export default function ChartsPage() {
     }
     const credentials = JSON.parse(storedCreds);
     const timeframeValue = timeframes[activeTimeframe as keyof typeof timeframes];
-    fetch(`${getBackendUrl()}/api/get_chart_data`, {
+    const backendUrl = getBackendUrl(); // Get URL
+    const fetchUrl = `${backendUrl}/api/get_chart_data`;
+    console.log("ChartsPage (fetchChartData) fetching from:", fetchUrl); // <<< ADDED LOGGING
+    fetch(fetchUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...credentials, symbol: activeSymbol, timeframe: timeframeValue }),
@@ -121,6 +124,7 @@ export default function ChartsPage() {
     })
     .catch(error => {
       console.error("[CHARTS] Error fetching chart data:", error);
+      console.error("[CHARTS] Failed URL was:", fetchUrl); // <<< ADDED LOGGING
       showAlert(`Could not load chart data: ${error.error || "Is the Python server running?"}`, 'error');
       setChartData([]);
     })
@@ -138,7 +142,10 @@ export default function ChartsPage() {
                 setMt5Server(credentials.server);
                 setMt5TerminalPath(credentials.terminal_path);
 
-                const symbolsResponse = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
+                const backendUrl = getBackendUrl(); // Get URL
+                const fetchUrl = `${backendUrl}/api/get_all_symbols`;
+                console.log("ChartsPage (checkConnection) fetching from:", fetchUrl); // <<< ADDED LOGGING
+                const symbolsResponse = await fetch(fetchUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(credentials)
@@ -150,9 +157,14 @@ export default function ChartsPage() {
                 } else {
                     setIsConnected(false);
                     console.error("Initial connection check failed.");
+                    console.error("Failed URL was:", fetchUrl); // <<< ADDED LOGGING
                 }
             } catch (error) {
                 console.error("Error during initial connection check:", error);
+                // Log the URL that might have failed if it was constructed
+                const backendUrl = getBackendUrl();
+                const failedUrl = `${backendUrl}/api/get_all_symbols`;
+                console.error("Failed URL during checkConnection catch:", failedUrl); // <<< ADDED LOGGING
                 setIsConnected(false);
             }
         } else {
@@ -160,13 +172,16 @@ export default function ChartsPage() {
         }
     };
     checkConnection();
-  }, []);
+  }, []); // Keep dependency array empty to run only once on mount
 
   useEffect(() => { if (isConnected) { fetchChartData(); } }, [isConnected, fetchChartData]);
 
   useEffect(() => {
     if (isConnected) {
-        socketRef.current = io(getBackendUrl());
+        // Use getBackendUrl() for socket connection as well
+        const backendUrlForSocket = getBackendUrl();
+        console.log("Connecting socket to:", backendUrlForSocket);
+        socketRef.current = io(backendUrlForSocket); // Use the function here
         socketRef.current.on('connect', () => {
             console.log('Socket connected for chart updates and analysis!');
             const storedCreds = localStorage.getItem('mt5_credentials');
@@ -228,8 +243,11 @@ export default function ChartsPage() {
       server: mt5Server,
       terminal_path: mt5TerminalPath
     };
+    const backendUrl = getBackendUrl();
+    const connectUrl = `${backendUrl}/api/get_all_symbols`;
+    console.log("ChartsPage (handleConnect) posting to:", connectUrl); // Log connect URL
     try {
-        const response = await fetch(`${getBackendUrl()}/api/get_all_symbols`, {
+        const response = await fetch(connectUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(credentials),
@@ -251,6 +269,7 @@ export default function ChartsPage() {
             }
         }
     } catch (error: any) {
+        console.error("Failed connection URL was:", connectUrl); // Log failed connect URL
         showAlert(`Connection failed: ${error.message}`, 'error');
     } finally {
         setIsConnecting(false);
@@ -276,8 +295,13 @@ export default function ChartsPage() {
     if (parseFloat(lotSize) <= 0) { showAlert('Lot size must be greater than 0.', 'error'); return; }
     if (!analysisResult) { showAlert('Please run analysis before placing a trade.', 'error'); return; }
     setIsTrading(true);
+
+    const backendUrl = getBackendUrl();
+    const tradeUrl = `${backendUrl}/api/execute_trade`;
+    console.log("ChartsPage (handleManualTrade) posting to:", tradeUrl); // Log trade URL
+
     try {
-      const response = await fetch(`${getBackendUrl()}/api/execute_trade`, {
+      const response = await fetch(tradeUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             ...JSON.parse(storedCreds), symbol: activeSymbol, lot_size: lotSize, trade_type: tradeType,
@@ -288,6 +312,7 @@ export default function ChartsPage() {
       if (!response.ok) throw new Error(result.error || 'Failed to execute trade.');
       showAlert(`Success! ${tradeType} order placed. Order ID: ${result.details.order_id}`, 'success');
     } catch (error: any) {
+      console.error("Failed trade URL was:", tradeUrl); // Log failed trade URL
       showAlert(`Trade failed: ${error.message}`, 'error');
     } finally { setIsTrading(false); }
   };
@@ -326,6 +351,7 @@ export default function ChartsPage() {
       }
     }
 
+    // Use the saveSettings function from the hook
     const success = await saveSettings({
       auto_trading_enabled: newAutoTradingEnabled,
       pairs_to_trade: newPairs,

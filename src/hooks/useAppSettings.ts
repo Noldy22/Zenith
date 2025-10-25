@@ -36,8 +36,11 @@ export const useAppSettings = () => {
 
     const fetchSettings = useCallback(async () => { // Wrap fetch in useCallback
         setIsLoading(true);
+        const backendUrl = getBackendUrl(); // Get URL
+        const fetchUrl = `${backendUrl}/api/settings`;
+        console.log("useAppSettings fetching from:", fetchUrl); // <<< ADDED LOGGING
         try {
-            const response = await fetch(`${getBackendUrl()}/api/settings`);
+            const response = await fetch(fetchUrl);
             if (response.ok) {
                 const data = await response.json();
                 // --- Data Sanitization ---
@@ -56,7 +59,8 @@ export const useAppSettings = () => {
                 toast.error(`Error fetching settings: ${errorData.error || response.statusText}`);
             }
         } catch (error) {
-            console.error("Fetch settings error:", error);
+            console.error("Fetch settings error in useAppSettings:", error); // <<< ADDED CONSOLE ERROR
+            console.error("Failed URL was:", fetchUrl); // <<< ADDED CONSOLE ERROR
             toast.error("Backend server might not be running or reachable.");
         } finally {
             setIsLoading(false);
@@ -81,8 +85,12 @@ export const useAppSettings = () => {
                 : settings.pairs_to_trade // Fallback if not provided or invalid
         };
 
+        const backendUrl = getBackendUrl(); // Get URL for saving
+        const saveUrl = `${backendUrl}/api/settings`;
+        console.log("useAppSettings saving to:", saveUrl); // Log save URL
+
         try {
-            const response = await fetch(`${getBackendUrl()}/api/settings`, {
+            const response = await fetch(saveUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settingsToSave),
@@ -98,6 +106,7 @@ export const useAppSettings = () => {
             }
         } catch (error) {
             console.error("Save settings error:", error);
+            console.error("Failed save URL was:", saveUrl); // Log failed save URL
             toast.error("Error connecting to backend to save settings.");
             return false; // Indicate failure
         } finally {
