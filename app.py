@@ -104,18 +104,19 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 
 # --- MODIFICATION START ---
-# Determine the base URL for the backend - PRIORITIZE LOCAL IP
-BACKEND_BASE_URL = os.getenv('BACKEND_URL')
-local_ip_for_redirect = get_local_ip() # Get the detected local IP
-
-if not BACKEND_BASE_URL:
-    # Use local IP if available and not 127.0.0.1 (unless explicitly preferred)
-    if local_ip_for_redirect != '127.0.0.1':
-         BACKEND_BASE_URL = f'http://{local_ip_for_redirect}:5000'
-         print(f"INFO: Using detected local IP for BACKEND_BASE_URL: {BACKEND_BASE_URL}")
-    else:
-        BACKEND_BASE_URL = 'http://127.0.0.1:5000' # Fallback to localhost if IP detection fails or returns loopback
-        print(f"INFO: Falling back to localhost for BACKEND_BASE_URL: {BACKEND_BASE_URL}")
+# Determine the base URL for the backend
+# For local development, ALWAYS use 127.0.0.1 for consistency with cookies.
+# For production, use the BACKEND_URL environment variable.
+if os.getenv('FLASK_ENV') == 'production':
+    BACKEND_BASE_URL = os.getenv('BACKEND_URL')
+    if not BACKEND_BASE_URL:
+        print("CRITICAL WARNING: FLASK_ENV is 'production' but BACKEND_URL environment variable is not set!")
+        # Fallback, but this should be configured in production
+        BACKEND_BASE_URL = f'http://{get_local_ip()}:5000'
+else:
+    # Use 127.0.0.1 for local development to avoid cookie domain issues
+    BACKEND_BASE_URL = 'http://127.0.0.1:5000'
+    print(f"INFO: Using development BACKEND_BASE_URL: {BACKEND_BASE_URL}")
 # --- MODIFICATION END ---
 
 
@@ -138,8 +139,8 @@ if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "redirect_uris": [GOOGLE_REDIRECT_URI, f"http://127.0.0.1:5000/api/auth/google/callback"], # Include both if needed
-                # You might need "javascript_origins" if configured in Google Cloud Console
+                # Make sure 127.0.0.1 callback is listed here AND in Google Cloud Console
+                "redirect_uris": [GOOGLE_REDIRECT_URI, f"http://127.0.0.1:5000/api/auth/google/callback"],
             }
         }
         google_flow = Flow.from_client_config(
@@ -166,7 +167,7 @@ print(f"Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}")
 print(f"Session Cookie Secure: {app.config['SESSION_COOKIE_SECURE']}")
 print(f"Google OAuth Enabled: {'Yes' if google_flow else 'No'}")
 if google_flow:
-    print(f"Google Redirect URI: {GOOGLE_REDIRECT_URI}")
+    print(f"Google Redirect URI: {GOOGLE_REDIRECT_URI}") # Reflects the logic change above
 print("------------------------------------------\n")
 
 # --- Logging Configuration ---
@@ -600,7 +601,7 @@ def get_gemini_analysis(analysis_data):
 
     logging.info("Requesting analysis refinement from Gemini...")
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash') # Consider 'gemini-pro' if flash is too basic
+        model = genai.GenerativeModel('gemini-2.5-flash') # Use 'gemini-2.5-flash' for potentially better performance
         prompt = f"""
         As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from the provided multi-timeframe technical analysis data. Focus on confluence and risk management.
 
@@ -1704,7 +1705,7 @@ def handle_logout():
     return jsonify({"message": "Logout successful."}), 200
 
 @app.route('/api/auth/session', methods=['GET'])
-@login_required_api
+@login_required_api # Use our custom decorator that returns JSON on failure
 def get_session():
     logging.debug(f"API: Session check for user {current_user.id}")
     return jsonify({
@@ -1739,16 +1740,18 @@ def google_callback():
         return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=GoogleOAuthNotConfigured")
 
     state = session.pop('oauth_state', None)
+    # Compare against request.args.get('state')
     if not state or state != request.args.get('state'):
-        logging.error("API: Google OAuth callback failed - state mismatch.")
+        logging.error(f"API: Google OAuth callback failed - state mismatch. Session state: {state}, Request state: {request.args.get('state')}")
         return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=StateMismatch")
 
     try:
-        # Adjust URL for local HTTP if needed
+        # Construct the full callback URL from the request
+        # This handles HTTP vs HTTPS automatically based on how the callback was received
         callback_url = request.url
-        if os.getenv('FLASK_ENV') != 'production' and callback_url.startswith('http:'):
-            callback_url = callback_url.replace('http:', 'https:', 1)
+        logging.debug(f"Using callback URL for fetch_token: {callback_url}")
 
+        # Remove OAUTHLIB_INSECURE_TRANSPORT override if using HTTPS in production
         google_flow.fetch_token(authorization_response=callback_url)
         credentials = google_flow.credentials
 
@@ -1774,8 +1777,9 @@ def google_callback():
             user.google_id = google_id
             db.session.commit()
             logging.info(f"API: Linked existing user '{email}' with Google ID.")
+        # If user exists and google_id already matches, just log them in
 
-        login_user(user)
+        login_user(user) # This sets the session cookie for the domain the request came from (127.0.0.1)
         logging.info(f"API: User '{email}' logged in via Google OAuth.")
         # Redirect to the frontend dashboard URL
         frontend_dashboard_url = os.getenv('FRONTEND_URL', 'http://localhost:3000') + '/dashboard'
@@ -1843,7 +1847,7 @@ if __name__ == '__main__':
     # --- Run Flask App with SocketIO ---
     host = '0.0.0.0' # Listen on all available network interfaces
     port = 5000
-    logging.info(f"Starting Flask-SocketIO server on http://{host}:{port}")
+    logging.info(f"Starting Flask-SocketIO server on http://{host}:{port} (Accessible locally via http://127.0.0.1:{port})")
     try:
         # use_reloader=False is important when using threads like this
         # debug=False is recommended for stability, rely on logging instead
