@@ -62,6 +62,7 @@ local_ip = get_local_ip()
 # Define allowed origins for CORS, including localhost and the machine's network IP
 allowed_origins = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
     f"http://{local_ip}:3000"
 ]
 
