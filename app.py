@@ -27,6 +27,8 @@ from google.auth.transport.requests import Request as GoogleRequest
 import numpy
 import jwt
 from itsdangerous import URLSafeTimedSerializer
+import smtplib
+from email.message import EmailMessage
 
 
 # --- AI & Learning Imports ---
@@ -1734,8 +1736,30 @@ def get_session():
 
 def send_reset_email(user):
     token = user.get_reset_token()
-    # Replace with your actual email sending logic
-    print(f"Password reset link: {os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/reset-password?token={token}")
+    email_address = os.getenv("EMAIL_ADDRESS")
+    email_password = os.getenv("EMAIL_PASSWORD")
+
+    if not email_address or not email_password:
+        logging.error("Email credentials not set. Cannot send password reset email.")
+        return
+
+    msg = EmailMessage()
+    msg['Subject'] = 'Password Reset Request'
+    msg['From'] = email_address
+    msg['To'] = user.email
+    msg.set_content(f'''To reset your password, visit the following link:
+{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/reset-password?token={token}
+
+If you did not make this request then simply ignore this email and no changes will be made.
+''')
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(email_address, email_password)
+            smtp.send_message(msg)
+            logging.info(f"Password reset email sent to {user.email}")
+    except Exception as e:
+        logging.error(f"Failed to send password reset email: {e}")
 
 @app.route('/api/auth/forgot-password', methods=['POST'])
 def forgot_password():

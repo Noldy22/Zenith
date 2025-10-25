@@ -26,6 +26,7 @@ const GoogleIcon = () => (
 export default function SignInPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
@@ -89,7 +90,7 @@ export default function SignInPage() {
                 disabled={isLoading}
               />
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2 relative">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Password</Label>
                 <Link
@@ -101,12 +102,24 @@ export default function SignInPage() {
               </div>
               <Input
                 id="password"
-                type="password"
+                type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 disabled={isLoading}
+                className="pr-10"
               />
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 mt-3 transform -translate-y-1/2 text-muted-foreground"
+                onClick={() => setShowPassword(!showPassword)}
+              >
+                {showPassword ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 10.73 5.09 16.36a10.23 10.23 0 0 1-2.11-1.23C1.23 12.83 1 12 1 12s3-7 11-7a11.53 11.53 0 0 1 4.24 1M1 1l22 22"/></svg>
+                )}
+              </button>
             </div>
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? 'Signing In...' : 'Sign In'}
