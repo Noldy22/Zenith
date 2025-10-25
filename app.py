@@ -2,7 +2,7 @@
 # --- (Keep all existing imports and configurations above this line) ---
 import MetaTrader5 as mt5
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 import json
 import threading
@@ -24,6 +24,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport.requests import Request as GoogleRequest
+import numpy
 import jwt
 
 
@@ -204,8 +205,8 @@ class User(UserMixin, db.Model):
 # --- Flask-Login User Loader ---
 @login_manager.user_loader
 def load_user(user_id):
-    # Flask-Login requires this function to load a user from the session ID
-    return User.query.get(int(user_id))
+    # Use the recommended db.session.get() instead of User.query.get()
+    return db.session.get(User, int(user_id))
 
 # --- MT5 Connection Manager ---
 class MT5Manager:
@@ -1728,7 +1729,7 @@ def set_token():
             'id': current_user.id,
             'email': current_user.email,
             'name': current_user.name,
-            'exp': datetime.utcnow() + timedelta(days=1) # Expiration time
+            'exp': datetime.now(timezone.utc) + timedelta(days=1) # Use timezone-aware UTC now
         }
         secret = app.config['SECRET_KEY']
         token = jwt.encode(payload, secret, algorithm='HS256')

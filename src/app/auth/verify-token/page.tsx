@@ -8,33 +8,28 @@ import { useAuth } from '@/context/AuthContext';
 export default function VerifyTokenPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { setTokenAndUser } = useAuth();
+  const { checkSession } = useAuth();
 
   useEffect(() => {
     const token = searchParams.get('token');
     if (token) {
-      // Decode token to get user info (basic decode, no verification needed here as it's from our own backend)
+      // Store the token and then trigger a session check
       try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        const user = {
-          id: payload.id,
-          email: payload.email,
-          name: payload.name,
-        };
-        // Use the context function to set token and user data
-        setTokenAndUser(token, user);
-        // Redirect to dashboard
-        router.push('/dashboard');
+        localStorage.setItem('jwt_token', token);
+        // Trigger the session check which will now find and validate the token
+        checkSession().then(() => {
+          router.push('/dashboard');
+        });
       } catch (error) {
-        console.error("Failed to decode token:", error);
-        // Redirect to signin with an error
-        router.push('/auth/signin?error=InvalidToken');
+        console.error("Failed to save token:", error);
+        router.push('/auth/signin?error=TokenSaveFailed');
       }
     } else {
-      // No token found, redirect to signin
       router.push('/auth/signin?error=NoTokenProvided');
     }
-  }, [searchParams, router, setTokenAndUser]);
+    // checkSession is stable and doesn't need to be in dependency array
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, router]);
 
   return (
     <div className="flex justify-center items-center min-h-screen">
