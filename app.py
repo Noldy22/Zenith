@@ -26,6 +26,9 @@ from google.oauth2 import id_token
 from google.auth.transport.requests import Request as GoogleRequest
 import numpy
 import jwt
+from itsdangerous import URLSafeTimedSerializer
+import smtplib
+from email.message import EmailMessage
 
 
 # --- AI & Learning Imports ---
@@ -201,6 +204,20 @@ class User(UserMixin, db.Model):
 
     def __repr__(self):
         return f'<User {self.email}>'
+
+    def get_reset_token(self, expires_sec=1800):
+        s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+        return s.dumps({'user_id': self.id})
+
+    @staticmethod
+    def verify_reset_token(token, expires_sec=1800):
+        s = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+        try:
+            user_id = s.loads(token, max_age=expires_sec)['user_id']
+        except:
+            return None
+        return User.query.get(user_id)
+
 
 # --- Flask-Login User Loader ---
 @login_manager.user_loader
@@ -1632,13 +1649,13 @@ def get_daily_stats():
 def handle_signup():
     logging.info("API: signup attempt received.")
     data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        logging.warning("API: signup failed - missing email or password.")
-        return jsonify({"error": "Email and password are required."}), 400
+    if not data or not data.get('email') or not data.get('password') or not data.get('name'):
+        logging.warning("API: signup failed - missing name, email or password.")
+        return jsonify({"error": "Name, email and password are required."}), 400
 
     email = data.get('email')
     password = data.get('password')
-    name = data.get('name') # Optional
+    name = data.get('name')
 
     # Check if user already exists
     existing_user = User.query.filter_by(email=email).first()
@@ -1716,6 +1733,54 @@ def get_session():
             "name": current_user.name
         }
     }), 200
+
+def send_reset_email(user):
+    token = user.get_reset_token()
+    email_address = os.getenv("EMAIL_ADDRESS")
+    email_password = os.getenv("EMAIL_PASSWORD")
+
+    if not email_address or not email_password:
+        logging.error("Email credentials not set. Cannot send password reset email.")
+        return
+
+    msg = EmailMessage()
+    msg['Subject'] = 'Password Reset Request'
+    msg['From'] = email_address
+    msg['To'] = user.email
+    msg.set_content(f'''To reset your password, visit the following link:
+{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/reset-password?token={token}
+
+If you did not make this request then simply ignore this email and no changes will be made.
+''')
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(email_address, email_password)
+            smtp.send_message(msg)
+            logging.info(f"Password reset email sent to {user.email}")
+    except Exception as e:
+        logging.error(f"Failed to send password reset email: {e}")
+
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def forgot_password():
+    data = request.get_json()
+    email = data.get('email')
+    user = User.query.filter_by(email=email).first()
+    if user:
+        send_reset_email(user)
+    return jsonify({"message": "If an account with that email exists, a password reset link has been sent."})
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    data = request.get_json()
+    token = data.get('token')
+    password = data.get('password')
+    user = User.verify_reset_token(token)
+    if not user:
+        return jsonify({"error": "That is an invalid or expired token."}), 400
+    user.set_password(password)
+    db.session.commit()
+    return jsonify({"message": "Your password has been updated! You can now log in."})
 
 @app.route('/api/auth/set-token')
 @login_required
