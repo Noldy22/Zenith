@@ -37,9 +37,9 @@ export default function Navbar() {
           <span className="text-gray-500">Loading...</span>
         ) : status === "authenticated" && user ? (
           <>
-             <span className="text-gray-400 text-sm flex items-center gap-1">
+             <Link href="/account" className="text-gray-400 hover:text-primary transition-colors text-sm flex items-center gap-1">
                 <User size={16} /> {user.name || user.email}
-             </span>
+             </Link>
              <Button variant="ghost" size="sm" onClick={handleLogout} className="text-red-400 hover:text-red-300 hover:bg-red-900/50">
                 <LogOut className="w-4 h-4 mr-1" /> Logout
              </Button>
@@ -66,9 +66,9 @@ export default function Navbar() {
           <div className="flex flex-col items-center p-4">
             {status === "authenticated" && user ? (
               <>
-                 <span className="py-3 text-gray-400 text-sm flex items-center gap-1">
+                 <Link href="/account" className="py-3 text-gray-400 hover:text-primary transition-colors text-sm flex items-center gap-1" onClick={closeMenu}>
                      <User size={16} /> {user.name || user.email}
-                 </span>
+                 </Link>
                 <Link href="/dashboard" className="py-3 text-gray-300 hover:text-primary transition-colors" onClick={closeMenu}>Dashboard</Link>
                 <Link href="/charts" className="py-3 text-gray-300 hover:text-primary transition-colors" onClick={closeMenu}>Charts</Link>
                 <Link href="/settings" className="py-3 text-gray-300 hover:text-primary transition-colors" onClick={closeMenu}>Settings</Link>

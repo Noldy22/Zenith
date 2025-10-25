@@ -1645,6 +1645,34 @@ def get_daily_stats():
 
 # --- START: Authentication API Routes ---
 
+@app.route('/api/update_user', methods=['POST'])
+@login_required_api
+def update_user():
+    user = current_user
+    data = request.get_json()
+
+    # Update name
+    if 'name' in data:
+        if user.google_id:
+            return jsonify({"error": "Cannot change name for Google accounts."}), 400
+        user.name = data['name']
+        db.session.commit()
+        return jsonify({"message": "Name updated successfully."})
+
+    # Update password
+    if 'current_password' in data and 'new_password' in data:
+        if user.google_id:
+            return jsonify({"error": "Cannot change password for Google accounts."}), 400
+        if not user.check_password(data['current_password']):
+            return jsonify({"error": "Current password is incorrect."}), 400
+        if len(data['new_password']) < 6:
+            return jsonify({"error": "New password must be at least 6 characters long."}), 400
+        user.set_password(data['new_password'])
+        db.session.commit()
+        return jsonify({"message": "Password updated successfully."})
+
+    return jsonify({"error": "No valid fields to update."}), 400
+
 @app.route('/api/auth/signup', methods=['POST'])
 def handle_signup():
     logging.info("API: signup attempt received.")
@@ -1682,7 +1710,12 @@ def handle_signup():
         logging.info(f"API: User '{email}' automatically logged in after signup.")
         return jsonify({
             "message": "Signup successful!",
-            "user": {"id": new_user.id, "email": new_user.email, "name": new_user.name}
+            "user": {
+                "id": new_user.id,
+                "email": new_user.email,
+                "name": new_user.name,
+                "is_google_account": False
+            }
         }), 201 # Created
     except Exception as e:
         db.session.rollback()
@@ -1710,7 +1743,12 @@ def handle_signin():
     logging.info(f"API: User '{email}' logged in successfully.")
     return jsonify({
         "message": "Login successful!",
-        "user": {"id": user.id, "email": user.email, "name": user.name}
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "is_google_account": bool(user.google_id)
+        }
     }), 200
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -1730,7 +1768,8 @@ def get_session():
         "user": {
             "id": current_user.id,
             "email": current_user.email,
-            "name": current_user.name
+            "name": current_user.name,
+            "is_google_account": bool(current_user.google_id)
         }
     }), 200
 
