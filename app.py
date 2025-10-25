@@ -1477,7 +1477,7 @@ def handle_chat():
         if not user_message or not analysis_context:
             return jsonify({"error": "Missing user message or analysis context."}), 400
 
-        model = genai.GenerativeModel('gemini-1.5-flash') # Or 'gemini-pro'
+        model = genai.GenerativeModel('gemini-2.5-flash') # Or 'gemini-pro'
         # Start chat with potentially processed history
         chat = model.start_chat(history=chat_history)
 

@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Settings, BarChart2 } from 'lucide-react';
-import { useAuth } from '@/context/AuthContext'; // Import our new useAuth hook
+import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 
 // --- Core Imports ---
@@ -38,42 +38,47 @@ const DashboardSkeleton = () => (
 
 export default function DashboardPage() {
     // --- Authentication Check ---
-    const { status } = useAuth(); // Use our new auth context
+    const { status } = useAuth();
     const router = useRouter();
 
-    // Redirect if not authenticated
-    useEffect(() => {
-        if (status === 'unauthenticated') {
-        router.push('/auth/signin'); // Redirect to login page
-        }
-    }, [status, router]);
-
     // --- Use Custom Hooks ---
-    useSocketConnection(); // Manages connection toasts
-    const { settings, isLoading: settingsLoading } = useAppSettings(); // Manages settings
-    const { accountInfo, tradeSignal, setTradeSignal } = useAccountData(settings); // Manages real-time data
+    useSocketConnection();
+    // *** MODIFICATION: Get fetchSettings function from the hook ***
+    const { settings, isLoading: settingsLoading, fetchSettings } = useAppSettings();
+    const { accountInfo, tradeSignal, setTradeSignal } = useAccountData(settings);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // *** MODIFICATION: Call fetchSettings AFTER auth is confirmed ***
+    useEffect(() => {
+        if (status === 'authenticated') {
+            // User is logged in, now we can fetch their settings
+            fetchSettings();
+        } else if (status === 'unauthenticated') {
+            // User is not logged in, redirect them
+            router.push('/auth/signin');
+        }
+        // This effect runs when auth 'status' changes
+    }, [status, router, fetchSettings]);
+
 
     // --- Helper Functions ---
     const handleConfirmTrade = async () => {
          if (!tradeSignal) return;
         setIsSubmitting(true);
         try {
-            const response = await fetch(`${getBackendUrl()}/api/execute_trade`, { // Renamed from 'execute_manual_trade'
+            const response = await fetch(`${getBackendUrl()}/api/execute_trade`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // We send credentials (cookies) with the request for backend auth
                 credentials: 'include', 
                 body: JSON.stringify({
-                  // Pass the required parameters for the backend route
-                  ...settings.mt5_credentials, // Includes login, server, etc.
+                  ...settings.mt5_credentials,
                   symbol: tradeSignal.symbol,
                   lot_size: tradeSignal.lot_size,
                   trade_type: tradeSignal.trade_type,
                   stop_loss: tradeSignal.sl,
                   take_profit: tradeSignal.tp,
-                  analysis: { reason: "Manual confirmation of AI signal" } // Add context
+                  analysis: { reason: "Manual confirmation of AI signal" }
                 }),
             });
             const result = await response.json();
@@ -82,7 +87,7 @@ export default function DashboardPage() {
                 setTradeSignal(null);
             } else if (response.status === 401) {
                  toast.error("Authentication error. Please log in again.");
-                 router.push('/auth/signin'); // Redirect on auth error
+                 router.push('/auth/signin');
             } else {
                 toast.error(`Trade failed: ${result.error || 'Unknown error'}`);
             }
@@ -98,9 +103,9 @@ export default function DashboardPage() {
         return <DashboardSkeleton />;
     }
 
-    // Don't render content if unauthenticated (should be redirected anyway)
+    // Don't render content if unauthenticated
      if (status === 'unauthenticated') {
-        return null; // Or a simple "Redirecting..." message
+        return null;
     }
 
     // --- Render Dashboard Content (only if authenticated) ---

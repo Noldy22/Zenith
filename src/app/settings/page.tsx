@@ -1,8 +1,11 @@
+// src/app/settings/page.tsx
 "use client";
 
 import { useState, useEffect } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { useRouter } from 'next/navigation'; // Import useRouter
+import { useAuth } from '@/context/AuthContext'; // Import useAuth
 
 // --- Zenith/Shadcn UI Components ---
 import { Button } from '@/components/ui/button';
@@ -28,8 +31,9 @@ import {
 
 // --- Core Imports ---
 import type { Settings } from '../../lib/types';
-import { getBackendUrl } from '@/lib/utils'; // Use centralized util
-import { BrainCircuit } from 'lucide-react'; // Icon for the train button
+import { getBackendUrl } from '@/lib/utils';
+import { BrainCircuit } from 'lucide-react';
+import { useAppSettings } from '@/hooks/useAppSettings'; // Import the hook itself
 
 // Default empty state
 const defaultSettings: Settings = {
@@ -55,57 +59,45 @@ const defaultSettings: Settings = {
 };
 
 const SettingsPage = () => {
-    const [settings, setSettings] = useState<Settings>(defaultSettings);
-    const [isLoading, setIsLoading] = useState(true);
+    // --- Auth Hooks ---
+    const { status } = useAuth();
+    const router = useRouter();
+
+    // --- Settings Hooks ---
+    // *** MODIFICATION: Use the hook correctly ***
+    const { settings: appSettings, isLoading: settingsLoading, saveSettings, fetchSettings } = useAppSettings();
+    const [settings, setSettings] = useState<Settings>(defaultSettings); // Local form state
+    const [isLoading, setIsLoading] = useState(true); // Page loading state
     const [isSaving, setIsSaving] = useState(false);
     const [isTraining, setIsTraining] = useState(false);
-
-    // State for the comma-separated string for the pairs input
     const [pairsInput, setPairsInput] = useState('');
 
+    // --- Auth & Data Loading Effect ---
     useEffect(() => {
-        const fetchSettings = async () => {
+        if (status === 'authenticated') {
+            // User is logged in, fetch settings
             setIsLoading(true);
-            const backendUrl = getBackendUrl(); // Get URL
-            const fetchUrl = `${backendUrl}/api/settings`;
-            console.log("SettingsPage fetching from:", fetchUrl); // <<< ADDED LOGGING
-            try {
-                const response = await fetch(fetchUrl);
-                if (response.ok) {
-                    const data = await response.json();
+            fetchSettings().then(() => {
+                // After fetching, appSettings will update, but we need to wait for the next render
+                // We'll use another effect to sync appSettings to our local state
+            });
+        } else if (status === 'unauthenticated') {
+            // User is not logged in, redirect
+            router.push('/auth/signin');
+        }
+    }, [status, router, fetchSettings]);
 
-                    // --- Data Sanitization ---
-                    data.pairs_to_trade = Array.isArray(data.pairs_to_trade) ? data.pairs_to_trade : [];
+    // --- Sync Fetched Settings to Local Form State ---
+    useEffect(() => {
+        if (appSettings && !settingsLoading) {
+            setSettings(appSettings); // Sync fetched settings to local state
+            setPairsInput(appSettings.pairs_to_trade.join(', '));
+            setIsLoading(false); // Page is no longer loading
+        }
+    }, [appSettings, settingsLoading]);
 
-                    if (data.mt5_credentials) {
-                        data.mt5_credentials.login = String(data.mt5_credentials.login || "");
-                        data.mt5_credentials.password = data.mt5_credentials.password || "";
-                        data.mt5_credentials.server = data.mt5_credentials.server || "";
-                        data.mt5_credentials.terminal_path = data.mt5_credentials.terminal_path || "";
-                    } else {
-                        data.mt5_credentials = defaultSettings.mt5_credentials;
-                    }
-
-                    setSettings({ ...defaultSettings, ...data }); // Merge with defaults
-                    setPairsInput(data.pairs_to_trade.join(', '));
-                } else {
-                    const errorData = await response.json().catch(() => ({ error: "Could not fetch settings" }));
-                    toast.error(`Error fetching settings: ${errorData.error || response.statusText}`);
-                }
-            } catch (error) {
-                console.error("Fetch settings error in SettingsPage:", error); // <<< ADDED CONSOLE ERROR
-                console.error("Failed URL was:", fetchUrl); // <<< ADDED CONSOLE ERROR
-                toast.error("Backend server might not be running or reachable.");
-            } finally {
-                setIsLoading(false);
-            }
-        };
-        fetchSettings();
-    }, []);
 
     // --- Component-Specific Handlers ---
-
-    // Generic handler for simple Input and Select changes
     const handleChange = (name: string, value: string | number) => {
         const keys = name.split('.');
         if (keys.length > 1) {
@@ -124,7 +116,6 @@ const SettingsPage = () => {
         }
     };
 
-    // Handler for Switch components
     const handleSwitchChange = (name: keyof Settings) => (checked: boolean) => {
         setSettings(prev => ({
             ...prev,
@@ -132,7 +123,6 @@ const SettingsPage = () => {
         }));
     };
 
-    // Handler for Slider components
     const handleSliderChange = (name: keyof Settings) => (value: number[]) => {
         setSettings(prev => ({
             ...prev,
@@ -140,50 +130,30 @@ const SettingsPage = () => {
         }));
     };
 
-    // Handler for Pairs Input
     const handlePairsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setPairsInput(e.target.value);
     };
 
     // --- Main Actions ---
-
     const handleSaveSettings = async () => {
         setIsSaving(true);
-        toast.info("Saving settings...");
-
+        
         const pairsArray = pairsInput.split(',')
                                     .map(pair => pair.trim().toUpperCase())
                                     .filter(pair => pair !== '');
-
+        
+        // We pass the *entire* local settings object to saveSettings
         const settingsToSave = {
             ...settings,
             pairs_to_trade: pairsArray,
         };
 
-        const backendUrl = getBackendUrl();
-        const saveUrl = `${backendUrl}/api/settings`;
-        console.log("SettingsPage saving to:", saveUrl); // Log save URL
-
-        try {
-            const response = await fetch(saveUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settingsToSave),
-            });
-            if (response.ok) {
-                toast.success("Settings saved successfully!");
-                setSettings(settingsToSave); // Update local state to match saved state
-            } else {
-                 const errorData = await response.json().catch(() => ({ error: "Failed to save settings" }));
-                 toast.error(`Failed to save settings: ${errorData.error || response.statusText}`);
-            }
-        } catch (error) {
-            console.error("Save settings error:", error);
-            console.error("Failed save URL was:", saveUrl); // Log failed save URL
-            toast.error("Error connecting to backend.");
-        } finally {
-            setIsSaving(false);
+        const success = await saveSettings(settingsToSave);
+        if (success) {
+            // Refetch settings to confirm (or just trust local state)
+            setSettings(settingsToSave); // Update local state
         }
+        setIsSaving(false);
     };
 
     const handleTrainModel = async () => {
@@ -191,28 +161,38 @@ const SettingsPage = () => {
         toast.info("Starting model training... This may take a moment.");
         const backendUrl = getBackendUrl();
         const trainUrl = `${backendUrl}/api/train_model`;
-        console.log("SettingsPage triggering model training at:", trainUrl); // Log train URL
+        console.log("SettingsPage triggering model training at:", trainUrl);
         try {
             const response = await fetch(trainUrl, {
                 method: 'POST',
+                credentials: 'include', // *** ADD THIS LINE ***
             });
             const result = await response.json();
             if (response.ok) {
                 toast.success(`Model trained successfully! Accuracy: ${(result.accuracy * 100).toFixed(2)}%`);
+            } else if (response.status === 401) {
+                toast.error("Authentication error. Please log in again.");
+                router.push('/auth/signin');
             } else {
                 toast.error(`Training failed: ${result.error || "Unknown error"}`);
             }
         } catch (error) {
             console.error("Train model error:", error);
-            console.error("Failed train URL was:", trainUrl); // Log failed train URL
+            console.error("Failed train URL was:", trainUrl);
             toast.error("Error connecting to backend for training.");
         } finally {
             setIsTraining(false);
         }
     };
 
-    if (isLoading) {
+    // Show skeleton if auth or settings are loading
+    if (status === 'loading' || isLoading) {
         return <div className="p-8 text-center animate-pulse">Loading settings...</div>;
+    }
+    
+    // Don't render if unauthenticated (should be redirected)
+    if (status === 'unauthenticated') {
+        return null;
     }
 
     return (
@@ -263,9 +243,6 @@ const SettingsPage = () => {
                                 min={1} max={20} step={0.5}
                             />
                         </div>
-                        {/* REMOVED "Account Balance" input as requested.
-                          It's now fetched automatically on the dashboard.
-                        */}
                     </CardContent>
                 </Card>
 
@@ -322,7 +299,7 @@ const SettingsPage = () => {
                     <CardHeader>
                         <CardTitle>MT5 Connection</CardTitle>
                         <CardDescription>
-                            Your credentials are sent directly to your server and never stored by us.
+                            Your credentials are sent directly to your server.
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -394,7 +371,7 @@ const SettingsPage = () => {
                             />
                         </div>
 
-                        {/* Proactive Close - FIXED: Removed md:col-span-2 to align with the grid */}
+                        {/* Proactive Close */}
                         <div className="flex items-center justify-between space-x-2">
                             <Label htmlFor="proactive_close_enabled" className="text-foreground">
                                 Enable Proactive Close
@@ -405,8 +382,7 @@ const SettingsPage = () => {
                                 onCheckedChange={handleSwitchChange("proactive_close_enabled")}
                             />
                         </div>
-                         {/* This description now sits neatly under the toggle in the same column */}
-                        <div className="space-y-2">
+                         <div className="space-y-2">
                              <p className="text-sm text-muted-foreground pt-2">
                                 Allow AI to close trades early based on counter-signals.
                             </p>
