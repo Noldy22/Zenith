@@ -17,6 +17,7 @@ export default function AccountPage() {
     const router = useRouter();
 
     const [name, setName] = useState('');
+    const [nameChangePassword, setNameChangePassword] = useState('');
     const [currentPassword, setCurrentPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
@@ -41,7 +42,7 @@ export default function AccountPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ name, current_password: nameChangePassword }),
             });
 
             const result = await response.json();
@@ -49,6 +50,7 @@ export default function AccountPage() {
             if (response.ok) {
                 toast.success("Name updated successfully!");
                 await fetchUser(); // Re-fetch user data to update the UI
+                setNameChangePassword(''); // Clear password field on success
             } else {
                 toast.error(result.error || "Failed to update name.");
             }
@@ -150,6 +152,19 @@ export default function AccountPage() {
                                 />
                                 {user.is_google_account && <p className="text-xs text-muted-foreground">Username cannot be changed for Google accounts.</p>}
                             </div>
+                             {!user.is_google_account && (
+                                <div className="space-y-2">
+                                    <Label htmlFor="name_change_password">Confirm Password</Label>
+                                    <Input
+                                        id="name_change_password"
+                                        type="password"
+                                        value={nameChangePassword}
+                                        onChange={(e) => setNameChangePassword(e.target.value)}
+                                        disabled={isSaving}
+                                        required
+                                    />
+                                </div>
+                            )}
                             <Button type="submit" disabled={isSaving || user.is_google_account}>
                                 {isSaving ? 'Saving...' : 'Save Name'}
                             </Button>

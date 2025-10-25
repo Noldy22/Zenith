@@ -1655,6 +1655,8 @@ def update_user():
     if 'name' in data:
         if user.google_id:
             return jsonify({"error": "Cannot change name for Google accounts."}), 400
+        if not data.get('current_password') or not user.check_password(data['current_password']):
+            return jsonify({"error": "Current password is incorrect."}), 400
         user.name = data['name']
         db.session.commit()
         return jsonify({"message": "Name updated successfully."})
