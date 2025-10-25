@@ -102,14 +102,22 @@ login_manager.unauthorized_handler(lambda: (jsonify(error="Login required."), 40
 # --- Google OAuth Configuration ---
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-# Determine the base URL for the backend
+
+# --- MODIFICATION START ---
+# Determine the base URL for the backend - PRIORITIZE LOCAL IP
 BACKEND_BASE_URL = os.getenv('BACKEND_URL')
+local_ip_for_redirect = get_local_ip() # Get the detected local IP
+
 if not BACKEND_BASE_URL:
-    # Attempt to use local IP if not explicitly set
-    try:
-        BACKEND_BASE_URL = f'http://{get_local_ip()}:5000'
-    except Exception:
-        BACKEND_BASE_URL = 'http://127.0.0.1:5000' # Fallback to localhost
+    # Use local IP if available and not 127.0.0.1 (unless explicitly preferred)
+    if local_ip_for_redirect != '127.0.0.1':
+         BACKEND_BASE_URL = f'http://{local_ip_for_redirect}:5000'
+         print(f"INFO: Using detected local IP for BACKEND_BASE_URL: {BACKEND_BASE_URL}")
+    else:
+        BACKEND_BASE_URL = 'http://127.0.0.1:5000' # Fallback to localhost if IP detection fails or returns loopback
+        print(f"INFO: Falling back to localhost for BACKEND_BASE_URL: {BACKEND_BASE_URL}")
+# --- MODIFICATION END ---
+
 
 GOOGLE_REDIRECT_URI = f"{BACKEND_BASE_URL}/api/auth/google/callback"
 
@@ -130,7 +138,7 @@ if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "redirect_uris": [GOOGLE_REDIRECT_URI],
+                "redirect_uris": [GOOGLE_REDIRECT_URI, f"http://127.0.0.1:5000/api/auth/google/callback"], # Include both if needed
                 # You might need "javascript_origins" if configured in Google Cloud Console
             }
         }
@@ -1769,7 +1777,11 @@ def google_callback():
 
         login_user(user)
         logging.info(f"API: User '{email}' logged in via Google OAuth.")
-        return redirect(os.getenv('FRONTEND_URL', 'http://localhost:3000') + '/dashboard')
+        # Redirect to the frontend dashboard URL
+        frontend_dashboard_url = os.getenv('FRONTEND_URL', 'http://localhost:3000') + '/dashboard'
+        logging.info(f"Redirecting user to frontend dashboard: {frontend_dashboard_url}")
+        return redirect(frontend_dashboard_url)
+
 
     except Exception as e:
         logging.error(f"API: Error during Google OAuth callback: {e}", exc_info=True)
