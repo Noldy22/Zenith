@@ -1,14 +1,5 @@
 # app.py
-from flask import Flask, request, jsonify, redirect, url_for, session
-from flask_cors import CORS
-from flask_socketio import SocketIO, emit
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from flask_bcrypt import Bcrypt
-from werkzeug.security import generate_password_hash, check_password_hash
-from google_auth_oauthlib.flow import Flow
-from google.oauth2 import id_token
-from google.auth.transport.requests import Request as GoogleRequest
+# --- (Keep all existing imports and configurations above this line) ---
 import MetaTrader5 as mt5
 import pandas as pd
 from datetime import datetime, timedelta
@@ -23,6 +14,18 @@ import traceback # Import traceback for detailed error logging
 import logging
 import google.generativeai as genai
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify, redirect, url_for, session
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_bcrypt import Bcrypt
+from werkzeug.security import generate_password_hash, check_password_hash
+from google_auth_oauthlib.flow import Flow
+from google.oauth2 import id_token
+from google.auth.transport.requests import Request as GoogleRequest
+import numpy # <<<--- ***Import numpy***
+
 
 # --- AI & Learning Imports ---
 from analysis import (
@@ -503,9 +506,30 @@ def init_db():
 
 # --- MT5 Data Formatting ---
 def format_bar_data(bar, tf_str):
-    """Converts MT5 bar tuple to a dictionary suitable for the frontend chart."""
+    """Converts MT5 bar tuple/object to a dictionary suitable for the frontend chart."""
     try:
-        time_raw, open_val, high_val, low_val, close_val = bar[:5] # Extract first 5 elements
+        # Check if 'bar' is a numpy structured array element (numpy.void)
+        # Access elements by key/name
+        if isinstance(bar, numpy.void) and hasattr(bar.dtype, 'names') and all(name in bar.dtype.names for name in ['time', 'open', 'high', 'low', 'close']):
+            time_raw = bar['time']
+            open_val = bar['open']
+            high_val = bar['high']
+            low_val = bar['low']
+            close_val = bar['close']
+        # Fallback to assuming it's a sequence (tuple/list)
+        elif isinstance(bar, (tuple, list)) and len(bar) >= 5:
+             time_raw, open_val, high_val, low_val, close_val = bar[:5]
+        # Check if 'bar' has named attributes (less common for MT5 rates but worth checking)
+        elif hasattr(bar, 'time') and hasattr(bar, 'open') and hasattr(bar, 'high') and hasattr(bar, 'low') and hasattr(bar, 'close'):
+            time_raw = bar.time
+            open_val = bar.open
+            high_val = bar.high
+            low_val = bar.low
+            close_val = bar.close
+        else:
+            # If it's none of the expected types, raise error
+            raise TypeError(f"Unexpected bar data type or structure: {type(bar)}, Content: {bar}")
+
         dt = datetime.fromtimestamp(int(time_raw))
 
         # Use BusinessDay for daily/weekly/monthly, timestamp for intraday
@@ -518,14 +542,11 @@ def format_bar_data(bar, tf_str):
             "time": time_data, "open": float(open_val), "high": float(high_val),
             "low": float(low_val), "close": float(close_val)
         }
-    except (IndexError, ValueError, TypeError) as e:
-        logging.error(f"Error formatting bar data: {e}. Bar data: {bar}", exc_info=True)
+    except (IndexError, ValueError, TypeError, AttributeError) as e:
+        logging.error(f"Error formatting bar data: {e}. Bar data: {bar}", exc_info=False)
         return None # Return None on failure
 
-# --- Core Analysis & Trading Logic (Functions remain largely the same) ---
-# These functions perform the technical analysis and generate suggestions.
-# No fundamental changes needed here for authentication itself.
-
+# --- (Keep the rest of your _run_full_analysis, get_gemini_analysis, etc. functions here) ---
 def _run_full_analysis(symbol, credentials, style):
     """Runs analysis across multiple timeframes based on trading style."""
     logging.info(f"Running full analysis for {symbol}, style {style}")
@@ -571,7 +592,7 @@ def get_gemini_analysis(analysis_data):
 
     logging.info("Requesting analysis refinement from Gemini...")
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash') # Consider 'gemini-pro' if flash is too basic
+        model = genai.GenerativeModel('gemini-2.5-flash') # Consider 'gemini-pro' if flash is too basic
         prompt = f"""
         As a professional trading analyst AI, your task is to identify a single, high-probability trading setup from the provided multi-timeframe technical analysis data. Focus on confluence and risk management.
 
@@ -1595,12 +1616,169 @@ def get_daily_stats():
         return jsonify({"error": "An unexpected server error occurred."}), 500
 
 
+# --- START: Authentication API Routes ---
+
+@app.route('/api/auth/signup', methods=['POST'])
+def handle_signup():
+    logging.info("API: signup attempt received.")
+    data = request.get_json()
+    if not data or not data.get('email') or not data.get('password'):
+        logging.warning("API: signup failed - missing email or password.")
+        return jsonify({"error": "Email and password are required."}), 400
+
+    email = data.get('email')
+    password = data.get('password')
+    name = data.get('name') # Optional
+
+    # Check if user already exists
+    existing_user = User.query.filter_by(email=email).first()
+    if existing_user:
+        logging.warning(f"API: signup failed - email '{email}' already exists.")
+        return jsonify({"error": f"Email '{email}' already exists."}), 409 # Conflict
+
+    # Validate password length (basic example)
+    if len(password) < 6:
+         logging.warning("API: signup failed - password too short.")
+         return jsonify({"error": "Password must be at least 6 characters long."}), 400
+
+    # Create new user
+    new_user = User(email=email, name=name)
+    new_user.set_password(password) # Hashes the password
+
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        logging.info(f"API: User '{email}' created successfully.")
+
+        # --- Automatically log in after signup ---
+        login_user(new_user)
+        logging.info(f"API: User '{email}' automatically logged in after signup.")
+        return jsonify({
+            "message": "Signup successful!",
+            "user": {"id": new_user.id, "email": new_user.email, "name": new_user.name}
+        }), 201 # Created
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"API: Database error during signup for '{email}': {e}", exc_info=True)
+        return jsonify({"error": "Database error during signup."}), 500
+
+@app.route('/api/auth/signin', methods=['POST'])
+def handle_signin():
+    logging.info("API: signin attempt received.")
+    data = request.get_json()
+    if not data or not data.get('email') or not data.get('password'):
+        logging.warning("API: signin failed - missing email or password.")
+        return jsonify({"error": "Email and password are required."}), 400
+
+    email = data.get('email')
+    password = data.get('password')
+
+    user = User.query.filter_by(email=email).first()
+
+    if not user or not user.check_password(password):
+        logging.warning(f"API: signin failed - invalid credentials for '{email}'.")
+        return jsonify({"error": "Invalid email or password."}), 401 # Unauthorized
+
+    login_user(user)
+    logging.info(f"API: User '{email}' logged in successfully.")
+    return jsonify({
+        "message": "Login successful!",
+        "user": {"id": user.id, "email": user.email, "name": user.name}
+    }), 200
+
+@app.route('/api/auth/logout', methods=['POST'])
+@login_required # Ensure user is logged in to log out
+def handle_logout():
+    user_email = current_user.email
+    logout_user()
+    logging.info(f"API: User '{user_email}' logged out successfully.")
+    session.clear()
+    return jsonify({"message": "Logout successful."}), 200
+
+@app.route('/api/auth/session', methods=['GET'])
+@login_required_api
+def get_session():
+    logging.debug(f"API: Session check for user {current_user.id}")
+    return jsonify({
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name
+        }
+    }), 200
+
+# --- END: Authentication API Routes ---
+
+# --- Google OAuth Routes ---
+@app.route('/api/auth/google/login')
+def google_login():
+    if not google_flow:
+        logging.error("API: Google OAuth login attempt failed - flow not configured.")
+        return jsonify({"error": "Google Login is not configured on the server."}), 503
+    authorization_url, state = google_flow.authorization_url(
+        access_type='offline', include_granted_scopes='true'
+    )
+    session['oauth_state'] = state
+    logging.info(f"API: Redirecting user to Google for OAuth. State: {state}")
+    return redirect(authorization_url)
+
+
+@app.route('/api/auth/google/callback')
+def google_callback():
+    logging.info("API: Google OAuth callback received.")
+    if not google_flow:
+        logging.error("API: Google OAuth callback failed - flow not configured.")
+        return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=GoogleOAuthNotConfigured")
+
+    state = session.pop('oauth_state', None)
+    if not state or state != request.args.get('state'):
+        logging.error("API: Google OAuth callback failed - state mismatch.")
+        return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=StateMismatch")
+
+    try:
+        # Adjust URL for local HTTP if needed
+        callback_url = request.url
+        if os.getenv('FLASK_ENV') != 'production' and callback_url.startswith('http:'):
+            callback_url = callback_url.replace('http:', 'https:', 1)
+
+        google_flow.fetch_token(authorization_response=callback_url)
+        credentials = google_flow.credentials
+
+        id_info = id_token.verify_oauth2_token(
+            credentials.id_token, GoogleRequest(), GOOGLE_CLIENT_ID
+        )
+
+        google_id = id_info.get('sub')
+        email = id_info.get('email')
+        name = id_info.get('name')
+
+        if not email:
+            logging.error("API: Google OAuth callback failed - email not found in token.")
+            return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=EmailNotFoundInToken")
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            user = User(email=email, name=name, google_id=google_id)
+            db.session.add(user)
+            db.session.commit()
+            logging.info(f"API: New user created via Google OAuth: '{email}'.")
+        elif not user.google_id:
+            user.google_id = google_id
+            db.session.commit()
+            logging.info(f"API: Linked existing user '{email}' with Google ID.")
+
+        login_user(user)
+        logging.info(f"API: User '{email}' logged in via Google OAuth.")
+        return redirect(os.getenv('FRONTEND_URL', 'http://localhost:3000') + '/dashboard')
+
+    except Exception as e:
+        logging.error(f"API: Error during Google OAuth callback: {e}", exc_info=True)
+        return redirect(f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/auth/signin?error=GoogleOAuthCallbackFailed")
+
 # --- SocketIO Event Handlers ---
 @socketio.on('connect')
 def handle_connect():
-    # User isn't necessarily logged in yet at this point via Flask-Login
     logging.info(f'Socket client connected: {request.sid}')
-    # You could potentially check for session cookies here if needed immediately
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -1608,14 +1786,11 @@ def handle_disconnect():
 
 @socketio.on('subscribe_to_chart')
 def handle_subscribe(data):
-    # Here you might want to verify if the user is logged in before proceeding
-    # For now, just log the subscription attempt
     sid = request.sid
     symbol = data.get('symbol', 'N/A')
     tf = data.get('timeframe', 'N/A')
     logging.info(f"Client {sid} attempting to subscribe to {symbol} {tf}")
-    # TODO: Add logic to actually start sending data if authenticated
-    # Example: Check current_user.is_authenticated
+    # Add actual subscription logic here if needed
 
 @socketio.on('unsubscribe_from_chart')
 def handle_unsubscribe(data):
@@ -1623,7 +1798,7 @@ def handle_unsubscribe(data):
     symbol = data.get('symbol', 'N/A')
     tf = data.get('timeframe', 'N/A')
     logging.info(f"Client {sid} unsubscribing from {symbol} {tf}")
-    # TODO: Add logic to stop sending data
+    # Add actual unsubscription logic here if needed
 
 # --- Main Execution Block ---
 if __name__ == '__main__':

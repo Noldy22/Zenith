@@ -1,13 +1,13 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import { useState, useEffect } from 'react'; // Added useEffect
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { Settings, BarChart2 } from 'lucide-react';
-import { useSession } from 'next-auth/react'; // Import useSession
-import { useRouter } from 'next/navigation'; // Import useRouter
+import { useAuth } from '@/context/AuthContext'; // Import our new useAuth hook
+import { useRouter } from 'next/navigation';
 
 // --- Core Imports ---
 import { getBackendUrl } from '@/lib/utils';
@@ -38,10 +38,10 @@ const DashboardSkeleton = () => (
 
 export default function DashboardPage() {
     // --- Authentication Check ---
-    const { data: session, status } = useSession();
+    const { status } = useAuth(); // Use our new auth context
     const router = useRouter();
 
-    // Redirect if not authenticated or still loading
+    // Redirect if not authenticated
     useEffect(() => {
         if (status === 'unauthenticated') {
         router.push('/auth/signin'); // Redirect to login page
@@ -57,14 +57,24 @@ export default function DashboardPage() {
 
     // --- Helper Functions ---
     const handleConfirmTrade = async () => {
-        // ... (keep existing handleConfirmTrade logic) ...
          if (!tradeSignal) return;
         setIsSubmitting(true);
         try {
-            const response = await fetch(`${getBackendUrl()}/api/execute_manual_trade`, { // Assuming this endpoint requires auth now
+            const response = await fetch(`${getBackendUrl()}/api/execute_trade`, { // Renamed from 'execute_manual_trade'
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(tradeSignal),
+                // We send credentials (cookies) with the request for backend auth
+                credentials: 'include', 
+                body: JSON.stringify({
+                  // Pass the required parameters for the backend route
+                  ...settings.mt5_credentials, // Includes login, server, etc.
+                  symbol: tradeSignal.symbol,
+                  lot_size: tradeSignal.lot_size,
+                  trade_type: tradeSignal.trade_type,
+                  stop_loss: tradeSignal.sl,
+                  take_profit: tradeSignal.tp,
+                  analysis: { reason: "Manual confirmation of AI signal" } // Add context
+                }),
             });
             const result = await response.json();
             if (response.ok) {
@@ -72,7 +82,7 @@ export default function DashboardPage() {
                 setTradeSignal(null);
             } else if (response.status === 401) {
                  toast.error("Authentication error. Please log in again.");
-                 // Optionally redirect to login: router.push('/auth/signin');
+                 router.push('/auth/signin'); // Redirect on auth error
             } else {
                 toast.error(`Trade failed: ${result.error || 'Unknown error'}`);
             }
@@ -83,7 +93,7 @@ export default function DashboardPage() {
         }
     };
 
-    // Show skeleton while loading session or settings
+    // Show skeleton while loading auth status or settings
     if (status === 'loading' || settingsLoading) {
         return <DashboardSkeleton />;
     }

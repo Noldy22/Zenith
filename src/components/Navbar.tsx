@@ -3,21 +3,16 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
-import { Menu, X, LogIn, LogOut, User } from 'lucide-react'; // Import icons
-import { useSession, signOut } from 'next-auth/react';
-import { Button } from '@/components/ui/button'; // Import Button for styling
+import { Menu, X, LogIn, LogOut, User } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext'; // Import our new useAuth hook
+import { Button } from '@/components/ui/button';
 
 export default function Navbar() {
   const [isOpen, setIsOpen] = useState(false);
-  const { data: session, status } = useSession(); // Get session data and status
+  const { user, status, logout } = useAuth(); // Get auth state from our context
 
   const handleLogout = () => {
-    signOut({ callbackUrl: '/' }); // Redirect to home after logout
-    setIsOpen(false);
-  }
-
-  const handleLogin = () => {
-    // Redirect handled by NextAuth default behavior or middleware
+    logout(); // Call the logout function from our context
     setIsOpen(false);
   }
 
@@ -40,10 +35,10 @@ export default function Navbar() {
         )}
         {status === "loading" ? (
           <span className="text-gray-500">Loading...</span>
-        ) : status === "authenticated" ? (
+        ) : status === "authenticated" && user ? (
           <>
              <span className="text-gray-400 text-sm flex items-center gap-1">
-                <User size={16} /> {session.user?.name || session.user?.email}
+                <User size={16} /> {user.name || user.email}
              </span>
              <Button variant="ghost" size="sm" onClick={handleLogout} className="text-red-400 hover:text-red-300 hover:bg-red-900/50">
                 <LogOut className="w-4 h-4 mr-1" /> Logout
@@ -69,10 +64,10 @@ export default function Navbar() {
       {isOpen && (
         <div className="absolute top-full left-0 w-full bg-secondary md:hidden shadow-lg z-50">
           <div className="flex flex-col items-center p-4">
-            {status === "authenticated" ? (
+            {status === "authenticated" && user ? (
               <>
                  <span className="py-3 text-gray-400 text-sm flex items-center gap-1">
-                     <User size={16} /> {session.user?.name || session.user?.email}
+                     <User size={16} /> {user.name || user.email}
                  </span>
                 <Link href="/dashboard" className="py-3 text-gray-300 hover:text-primary transition-colors" onClick={closeMenu}>Dashboard</Link>
                 <Link href="/charts" className="py-3 text-gray-300 hover:text-primary transition-colors" onClick={closeMenu}>Charts</Link>

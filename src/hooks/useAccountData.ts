@@ -4,10 +4,9 @@ import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
 import { socket } from '@/lib/socket';
 import { getBackendUrl } from '@/lib/utils';
-import { AppSettings } from './useAppSettings'; // Import the type
+import type { Settings } from '@/lib/types'; // Import the correct Settings type
 
 // --- Types ---
-// (Also candidates for a central types.ts file)
 export interface AccountInfo {
     balance: number;
     equity: number;
@@ -24,7 +23,7 @@ export interface TradeSignal {
 
 const initialAccountInfo: AccountInfo = { balance: 0, equity: 0, profit: 0 };
 
-export const useAccountData = (settings: AppSettings) => {
+export const useAccountData = (settings: Settings) => { // Use the correct Settings type
     const [accountInfo, setAccountInfo] = useState<AccountInfo>(initialAccountInfo);
     const [tradeSignal, setTradeSignal] = useState<TradeSignal | null>(null);
 
@@ -38,11 +37,15 @@ export const useAccountData = (settings: AppSettings) => {
                 const response = await fetch(`${getBackendUrl()}/api/get_account_info`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include', // Send session cookie for auth
                     body: JSON.stringify(creds),
                 });
                 if (response.ok) {
                     const data: AccountInfo = await response.json();
                     if (data.balance) setAccountInfo(data);
+                } else if (response.status === 401) {
+                    // Don't toast here, let dashboard handle redirect
+                    console.warn("useAccountData: Not authenticated to fetch account info.");
                 }
             } catch (e) {
                 console.error("Failed to fetch account info:", e);

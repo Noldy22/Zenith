@@ -2,13 +2,14 @@
 "use client";
 
 import { useState } from 'react';
-import { signIn } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import Link from 'next/link';
+import { useAuth } from '@/context/AuthContext'; // Import our new useAuth hook
+import { getBackendUrl } from '@/lib/utils'; // Import backend URL getter
 
 // Simple Google Icon SVG component
 const GoogleIcon = () => (
@@ -29,44 +30,36 @@ export default function SignInPage() {
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { login } = useAuth(); // Get the login function from our context
 
-  // Get error from query params (NextAuth redirects with ?error=...)
+  // Get error from query params (e.g., from Google OAuth redirect)
   const callbackError = searchParams.get('error');
 
   const handleCredentialsSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
-    try {
-      const result = await signIn('credentials', {
-        redirect: false, // Handle redirect manually based on result
-        email,
-        password,
-      });
+    
+    // Use the login function from our AuthContext
+    const result = await login(email, password);
 
-      if (result?.error) {
-        setError(result.error === 'CredentialsSignin' ? 'Invalid email or password.' : result.error);
-        console.error("SignIn Error:", result.error);
-      } else if (result?.ok) {
-        // Redirect to dashboard on successful login
-        router.push('/dashboard');
-      } else {
-         setError('An unknown error occurred during sign in.');
-      }
-    } catch (err) {
-      console.error("SignIn Catch Error:", err);
-      setError('An unexpected error occurred. Please try again.');
-    } finally {
-      setIsLoading(false);
+    if (result === true) {
+      // Login was successful
+      router.push('/dashboard');
+    } else {
+      // Login failed, result is the error message
+      setError(result as string);
     }
+    
+    setIsLoading(false);
   };
 
-   const handleGoogleSignIn = async () => {
+   const handleGoogleSignIn = () => {
     setIsLoading(true);
     setError(null);
-    // Redirects to Google, then back via callback
-    await signIn('google', { callbackUrl: '/dashboard' });
-    // setIsLoading(false); // No need, page redirects
+    // Redirect to our Flask backend's Google login route
+    const backendUrl = getBackendUrl();
+    window.location.href = `${backendUrl}/api/auth/google/login`;
   };
 
   // Display callback errors if present

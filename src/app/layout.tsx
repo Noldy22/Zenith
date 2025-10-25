@@ -5,7 +5,7 @@ import "./globals.css";
 import Navbar from "@/components/Navbar";
 import { AlertProvider } from "@/context/AlertContext";
 import AlertModal from "@/components/AlertModal";
-import SessionProviderWrapper from "@/context/SessionProviderWrapper"; // Import the wrapper
+import { AuthProvider } from "@/context/AuthContext"; // Import the new AuthProvider
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -22,14 +22,14 @@ export default function RootLayout({
   return (
     <html lang="en" className="bg-background text-foreground">
       <body className={inter.className}>
-        {/* Wrap everything inside SessionProviderWrapper */}
-        <SessionProviderWrapper>
+        {/* Wrap everything inside AuthProvider and AlertProvider */}
+        <AuthProvider>
           <AlertProvider>
             <Navbar />
             {children}
             <AlertModal />
           </AlertProvider>
-        </SessionProviderWrapper>
+        </AuthProvider>
       </body>
     </html>
   );
