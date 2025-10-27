@@ -186,15 +186,13 @@ logging.info("Flask application starting up...")
 # --- User Model (SQLAlchemy) ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(150), unique=True, nullable=False, index=True) # Added index
+    email = db.Column(db.String(150), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(150), nullable=True) # Nullable for OAuth users
     name = db.Column(db.String(150), nullable=True)
-    google_id = db.Column(db.String(150), unique=True, nullable=True, index=True) # Added index
-    # Add timestamps?
-    # created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    google_id = db.Column(db.String(150), unique=True, nullable=True, index=True)
+    settings = db.Column(db.Text, nullable=False, default='{}') # Store user-specific settings as JSON
 
     def set_password(self, password):
-        # Use bcrypt for hashing
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
 
     def check_password(self, password):
@@ -295,164 +293,60 @@ class MT5Manager:
 
 mt5_manager = MT5Manager() # Instantiate the manager
 
+# --- Default Settings ---
+DEFAULT_SETTINGS = {
+    "trading_style": "DAY_TRADING", "risk_per_trade": 2.0, "max_daily_loss": 5.0,
+    "account_balance": 10000.0, "auto_trading_enabled": False, "notifications_enabled": True,
+    "min_confluence": 2, "pairs_to_trade": [],
+    "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" },
+    "breakeven_enabled": False, "breakeven_pips": 20, "trailing_stop_enabled": False,
+    "trailing_stop_pips": 20, "proactive_close_enabled": False
+}
+
 # --- Global Application State ---
 class AppState:
     def __init__(self):
-        self.autotrade_running = False
-        self.autotrade_thread = None
-        self.monitoring_running = False
-        self.monitoring_thread = None
-        # Initialize with default settings structure
-        self.settings = {
-            "trading_style": "DAY_TRADING", "risk_per_trade": 2.0, "max_daily_loss": 5.0,
-            "account_balance": 10000.0, "auto_trading_enabled": False, "notifications_enabled": True,
-            "min_confluence": 2, "pairs_to_trade": [],
-            "mt5_credentials": { "login": 0, "password": "", "server": "", "terminal_path": "" },
-            "breakeven_enabled": False, "breakeven_pips": 20, "trailing_stop_enabled": False,
-            "trailing_stop_pips": 20, "proactive_close_enabled": False
-        }
-        self.lock = threading.Lock() # Lock for thread-safe access to settings/state
-        # Load ML model and vectorizer at startup
+        # This dictionary will hold user-specific threads and their running status.
+        # The structure for each user will be:
+        # { user_id: { 'autotrade': {'thread': Thread, 'running': Event}, 'monitor': {'thread': Thread, 'running': Event} } }
+        self.user_threads = {}
+        self.lock = threading.Lock()  # Lock for thread-safe access to the user_threads dictionary.
+
+        # The ML model and vectorizer remain global as they are not user-specific.
         self.ml_model, self.ml_vectorizer = get_model_and_vectorizer()
         if self.ml_model and self.ml_vectorizer:
             logging.info("ML Model and Vectorizer loaded successfully at startup.")
         else:
             logging.warning("ML Model or Vectorizer not found or failed to load at startup.")
 
-    def update_settings(self, new_settings):
-        """Safely updates application settings and handles MT5 reconnection if needed."""
-        reconnect_needed = False
-        creds_valid_for_reconnect = False
+# --- Settings Management ---
+def get_user_settings(user):
+    """
+    Loads a user's settings from the database and merges them with the default settings.
+    This ensures that all expected setting keys are present.
+    """
+    if not user or not hasattr(user, 'settings'):
+        return DEFAULT_SETTINGS.copy()
 
-        with self.lock:
-            current_creds = self.settings.get('mt5_credentials', {}).copy()
-            logging.debug(f"Updating settings. Current creds: {current_creds}")
+    try:
+        # Load the JSON string from the user's 'settings' attribute.
+        user_specific_settings = json.loads(user.settings or '{}')
+    except json.JSONDecodeError:
+        logging.warning(f"Could not decode settings for user {user.id}. Using defaults.")
+        user_specific_settings = {}
 
-            # --- Sanitize and Validate MT5 Credentials ---
-            if 'mt5_credentials' in new_settings and isinstance(new_settings.get('mt5_credentials'), dict):
-                new_creds_partial = new_settings['mt5_credentials']
-                login_str = new_creds_partial.get('login', current_creds.get('login', 0)) # Use current if missing
-                password = new_creds_partial.get('password', current_creds.get('password', ''))
-                server = new_creds_partial.get('server', current_creds.get('server', ''))
-                terminal_path = new_creds_partial.get('terminal_path', current_creds.get('terminal_path', ''))
-
-                try:
-                    login_int = int(login_str) if login_str else 0
-                except (ValueError, TypeError):
-                    logging.warning(f"Invalid MT5 login format in update: '{login_str}'. Using 0.")
-                    login_int = 0
-
-                # Form the complete, validated credentials for the update
-                validated_new_creds = {
-                    "login": login_int,
-                    "password": password,
-                    "server": server,
-                    "terminal_path": terminal_path
-                }
-                new_settings['mt5_credentials'] = validated_new_creds # Replace partial with full
-
-                # Check if credentials *actually* changed compared to current state
-                if validated_new_creds != current_creds:
-                    reconnect_needed = True
-                    logging.info(f"MT5 credentials changed. New: {validated_new_creds}")
-                    # Check if the new credentials are minimally valid for a connection attempt
-                    if validated_new_creds['login'] and validated_new_creds['password'] and validated_new_creds['server']:
-                        creds_valid_for_reconnect = True
-
-            # --- Merge Settings Deeply (especially for mt5_credentials) ---
-            updated_settings = self.settings.copy() # Start with current
-            for key, value in new_settings.items():
-                if key == 'mt5_credentials' and isinstance(value, dict):
-                    # Ensure mt5_credentials exists before updating
-                    if 'mt5_credentials' not in updated_settings:
-                        updated_settings['mt5_credentials'] = {}
-                    updated_settings['mt5_credentials'].update(value)
-                else:
-                    updated_settings[key] = value # Update other keys normally
-
-            self.settings = updated_settings # Apply the fully merged settings
-
-            # --- Save to File ---
-            try:
-                with open('settings.json', 'w') as f:
-                    json.dump(self.settings, f, indent=2)
-                logging.info("Saved updated settings to settings.json")
-            except IOError as e:
-                logging.error(f"Error saving settings.json: {e}")
-
-        # --- Attempt Reconnect Outside Lock ---
-        if reconnect_needed and creds_valid_for_reconnect:
-            logging.info("Attempting to reconnect MT5 due to credential change...")
-            if mt5_manager.connect(self.settings['mt5_credentials']):
-                 logging.info("MT5 reconnected successfully with new credentials.")
-            else:
-                 logging.error("MT5 reconnection failed after settings update.")
-        elif reconnect_needed:
-             logging.warning("Credentials changed, but new credentials seem invalid. Skipping MT5 reconnect attempt.")
-
-
-    def load_settings(self):
-        """Loads settings from file, merging with defaults, and attempts initial MT5 connection."""
-        settings_file = 'settings.json'
-        defaults = self.settings.copy() # Keep a copy of initial defaults
-
-        if os.path.exists(settings_file):
-            try:
-                with open(settings_file, 'r') as f:
-                    loaded_settings = json.load(f)
-                    logging.info(f"Loaded settings from {settings_file}")
-
-                    # --- Merge loaded settings onto defaults (deep merge for credentials) ---
-                    merged_settings = defaults # Start with defaults
-                    for key, value in loaded_settings.items():
-                        if key == 'mt5_credentials' and isinstance(value, dict):
-                            # Ensure mt5_credentials exists before updating
-                            if 'mt5_credentials' not in merged_settings:
-                                merged_settings['mt5_credentials'] = {}
-                            merged_settings['mt5_credentials'].update(value) # Merge dict
-                        elif key in merged_settings: # Only update keys that exist in defaults
-                            merged_settings[key] = value
-
-                    # --- Sanitize Loaded Credentials ---
-                    if 'mt5_credentials' in merged_settings:
-                        creds = merged_settings['mt5_credentials']
-                        login_str = creds.get('login', '')
-                        try:
-                            creds['login'] = int(login_str) if login_str else 0
-                        except (ValueError, TypeError):
-                            logging.warning(f"Invalid MT5 login format in settings file: '{login_str}'. Using 0.")
-                            creds['login'] = 0
-                        # Ensure other keys exist
-                        creds['password'] = creds.get('password', '')
-                        creds['server'] = creds.get('server', '')
-                        creds['terminal_path'] = creds.get('terminal_path', '')
-
-                    with self.lock:
-                        self.settings = merged_settings # Apply the merged settings
-
-            except json.JSONDecodeError:
-                logging.error(f"Error decoding JSON from {settings_file}. Using default settings.")
-                # Optionally save defaults back here if the file is corrupt
-            except Exception as e:
-                 logging.error(f"Unexpected error loading settings from {settings_file}: {e}", exc_info=True)
-                 logging.info("Using default settings.")
+    # Start with a copy of the defaults and update it with user-specific values.
+    # This creates a complete settings object for the user.
+    settings = DEFAULT_SETTINGS.copy()
+    for key, value in user_specific_settings.items():
+        # Special handling for nested dictionaries like 'mt5_credentials' to ensure they are merged, not overwritten.
+        if key in settings and isinstance(settings[key], dict) and isinstance(value, dict):
+            settings[key].update(value)
         else:
-             logging.warning(f"{settings_file} not found. Using default settings and creating the file.")
-             try:
-                 with open(settings_file, 'w') as f:
-                     json.dump(self.settings, f, indent=2) # Save defaults
-             except IOError as e:
-                 logging.error(f"Error creating default {settings_file}: {e}")
+            settings[key] = value
+    return settings
 
-        # --- Initial MT5 Connection Attempt ---
-        creds = self.settings.get('mt5_credentials')
-        if creds and creds.get('login'): # Only connect if login ID is valid (non-zero)
-             logging.info("Attempting initial MT5 connection from loaded settings...")
-             mt5_manager.connect(creds)
-        else:
-            logging.info("No valid MT5 login found in settings, skipping initial connection.")
-
-STATE = AppState() # Instantiate the global state
+STATE = AppState()
 
 # --- Authentication Decorator ---
 def login_required_api(f):
@@ -472,19 +366,30 @@ def mt5_required(f):
     @wraps(f)
     @login_required_api # User must be logged in first
     def decorated_function(*args, **kwargs):
+        user_settings = get_user_settings(current_user)
+        creds = user_settings.get('mt5_credentials')
+
         if not mt5_manager.is_initialized:
-            logging.warning(f"MT5 connection required for {request.path}, but not initialized. Attempting reconnect...")
-            creds = STATE.settings.get('mt5_credentials')
+            logging.warning(f"MT5 connection required for {request.path}, but not initialized. Attempting connect for user {current_user.id}...")
             if creds and creds.get('login'):
                 if not mt5_manager.connect(creds):
-                    logging.error(f"MT5 reconnect failed for {request.path}.")
+                    logging.error(f"MT5 connect failed for {request.path}.")
                     return jsonify({"error": "MetaTrader 5 connection failed. Check settings and terminal status."}), 503
-                logging.info(f"MT5 reconnected successfully for {request.path}.")
+                logging.info(f"MT5 connected successfully for {request.path}.")
             else:
-                 logging.warning(f"Cannot reconnect MT5 for {request.path}: No valid credentials.")
                  return jsonify({"error": "MetaTrader 5 credentials not configured."}), 503
-        # If already initialized or reconnected successfully
-        logging.debug(f"MT5 connection verified for {request.path}")
+
+        # If already initialized, ensure it's for the correct user account
+        account_info = mt5.account_info()
+        if not account_info or account_info.login != creds.get('login'):
+            logging.warning(f"MT5 account mismatch for user {current_user.id}. Required: {creds.get('login')}, Connected: {account_info.login if account_info else 'N/A'}. Reconnecting...")
+            if creds and creds.get('login'):
+                if not mt5_manager.connect(creds):
+                    return jsonify({"error": "MetaTrader 5 reconnection failed for user."}), 503
+            else:
+                return jsonify({"error": "MetaTrader 5 credentials not configured for this user."}), 503
+
+        logging.debug(f"MT5 connection verified for {request.path} for user {current_user.id}")
         return f(*args, **kwargs)
     return decorated_function
 
@@ -909,31 +814,70 @@ def _update_trade_outcomes(ignore_magic_number=False):
     return summary
 
 
+# --- Background Thread Management ---
+def start_user_threads(user):
+    user_id = user.id
+    with STATE.lock:
+        if user_id not in STATE.user_threads:
+            STATE.user_threads[user_id] = {}
+
+        # Start monitoring thread if not already running
+        if 'monitor' not in STATE.user_threads[user_id] or not STATE.user_threads[user_id]['monitor']['thread'].is_alive():
+            running_event = threading.Event()
+            running_event.set()
+            thread = threading.Thread(target=trade_monitoring_loop, args=(user_id, running_event), daemon=True)
+            STATE.user_threads[user_id]['monitor'] = {'thread': thread, 'running': running_event}
+            thread.start()
+            logging.info(f"Started monitoring thread for user {user_id}.")
+
+        # Start auto-trading thread if not already running
+        if 'autotrade' not in STATE.user_threads[user_id] or not STATE.user_threads[user_id]['autotrade']['thread'].is_alive():
+            running_event = threading.Event()
+            running_event.set()
+            thread = threading.Thread(target=trading_loop, args=(user_id, running_event), daemon=True)
+            STATE.user_threads[user_id]['autotrade'] = {'thread': thread, 'running': running_event}
+            thread.start()
+            logging.info(f"Started auto-trading thread for user {user_id}.")
+
+def stop_user_threads(user_id):
+    with STATE.lock:
+        if user_id in STATE.user_threads:
+            for thread_type, thread_info in STATE.user_threads[user_id].items():
+                if thread_info['thread'] and thread_info['thread'].is_alive():
+                    thread_info['running'].clear()  # Signal thread to stop
+                    thread_info['thread'].join(timeout=5)  # Wait for graceful exit
+                    logging.info(f"Stopped {thread_type} thread for user {user_id}.")
+            del STATE.user_threads[user_id]
+            logging.info(f"Removed user {user_id} from thread management.")
+
 # --- Background Threads ---
 
-def trading_loop():
-    """Background thread to scan for new auto-trading opportunities."""
-    logging.info("Auto-trading thread started.")
-    while STATE.autotrade_running:
-        try: # Wrap main loop iteration in try/except
-            with STATE.lock: settings = STATE.settings.copy()
+def trading_loop(user_id, running_event):
+    """Background thread to scan for new auto-trading opportunities for a specific user."""
+    logging.info(f"Auto-trading thread started for user {user_id}.")
+    while running_event.is_set():
+        try:
+            with app.app_context():
+                user = db.session.get(User, user_id)
+                if not user:
+                    logging.error(f"User {user_id} not found, stopping trading loop.")
+                    break
+                settings = get_user_settings(user)
 
             if not settings.get('auto_trading_enabled') or not mt5_manager.is_initialized:
-                logging.debug("Auto-trade disabled or MT5 disconnected. Sleeping.")
-                time.sleep(30) # Sleep longer if disabled
+                time.sleep(30)
                 continue
 
-            logging.info(f"[{datetime.now()}] Auto-trader: Starting scan for NEW trades...")
+            logging.info(f"[{datetime.now()}] Auto-trader (User {user_id}): Starting scan...")
             symbols_to_trade = settings.get('pairs_to_trade', [])
             if not symbols_to_trade:
-                 logging.warning("Auto-trader: No pairs selected for auto-trading in settings.")
-                 time.sleep(60)
-                 continue
+                time.sleep(60)
+                continue
 
-            creds = settings.get('mt5_credentials') # Use credentials from the copied settings
+            creds = settings.get('mt5_credentials')
 
             for symbol in symbols_to_trade:
-                if not STATE.autotrade_running: break # Exit if stopped
+                if not running_event.is_set(): break
 
                 # --- Skip if bot already has position on this symbol ---
                 open_positions = mt5.positions_get(symbol=symbol)
@@ -1030,23 +974,27 @@ def trading_loop():
     logging.info("Auto-trading thread stopped.")
 
 
-def trade_monitoring_loop():
-    """Background thread for managing active trades (BE, TS, Proactive Close)."""
-    logging.info("Trade monitoring thread started.")
-    while STATE.monitoring_running:
-        try: # Wrap main loop iteration
+def trade_monitoring_loop(user_id, running_event):
+    """Background thread for managing active trades for a specific user."""
+    logging.info(f"Trade monitoring thread started for user {user_id}.")
+    while running_event.is_set():
+        try:
+            with app.app_context():
+                user = db.session.get(User, user_id)
+                if not user:
+                    logging.error(f"User {user_id} not found, stopping monitoring loop.")
+                    break
+                settings = get_user_settings(user)
+
             if not mt5_manager.is_initialized:
-                logging.debug("Trade Monitor: MT5 not connected. Sleeping.")
                 time.sleep(60)
                 continue
 
             open_positions = mt5.positions_get()
             if not open_positions:
-                logging.debug("Trade Monitor: No open positions found.")
                 time.sleep(60)
                 continue
 
-            with STATE.lock: settings = STATE.settings.copy()
             creds = settings.get('mt5_credentials')
 
             bot_positions = [p for p in open_positions if p.magic == 234000]
@@ -1144,36 +1092,41 @@ def trade_monitoring_loop():
 
 # --- API Routes ---
 
-# GET /api/settings - Fetch current settings
-# POST /api/settings - Update settings
+# GET /api/settings - Fetch current settings for the logged-in user
+# POST /api/settings - Update settings for the logged-in user
 @app.route('/api/settings', methods=['GET', 'POST'])
-@login_required_api # Require login to view/change settings
+@login_required_api
 def handle_settings():
+    user = current_user
+
     if request.method == 'GET':
-        with STATE.lock:
-            # Return a copy to prevent external modification
-            current_settings = STATE.settings.copy()
-            # Ensure credentials aren't accidentally missing if empty
-            if 'mt5_credentials' not in current_settings:
-                current_settings['mt5_credentials'] = {"login": 0, "password": "", "server": "", "terminal_path": ""}
-        return jsonify(current_settings)
+        user_settings = get_user_settings(user)
+        return jsonify(user_settings)
 
     elif request.method == 'POST':
-        new_settings = request.get_json()
-        if not new_settings or not isinstance(new_settings, dict):
+        new_settings_data = request.get_json()
+        if not new_settings_data or not isinstance(new_settings_data, dict):
             return jsonify({"error": "Invalid JSON payload"}), 400
-        try:
-            # Update_settings handles validation, saving, and potential reconnect
-            STATE.update_settings(new_settings)
-            logging.info(f"User {current_user.id} updated settings.")
-            # Emit updated settings to all clients (optional, if UI needs live updates)
-            # with STATE.lock: socketio.emit('settings_updated', STATE.settings)
-            return jsonify({"message": "Settings updated successfully."})
-        except Exception as e:
-            logging.error(f"Error updating settings via API: {e}", exc_info=True)
-            return jsonify({"error": f"Failed to update settings: {e}"}), 500
-    else:
-        return jsonify({"error": "Method not allowed"}), 405
+
+        # Merge new data with existing settings to preserve keys not being updated
+        current_settings = get_user_settings(user)
+        updated_settings = current_settings.copy()
+        for key, value in new_settings_data.items():
+            if key in updated_settings and isinstance(updated_settings[key], dict) and isinstance(value, dict):
+                updated_settings[key].update(value)
+            else:
+                updated_settings[key] = value
+
+        user.settings = json.dumps(updated_settings)
+        db.session.commit()
+
+        # If MT5 credentials have changed, attempt to reconnect
+        if 'mt5_credentials' in new_settings_data:
+            logging.info(f"User {user.id} updated MT5 credentials. Attempting reconnect.")
+            mt5_manager.connect(updated_settings['mt5_credentials'])
+
+        logging.info(f"User {user.id} updated settings.")
+        return jsonify({"message": "Settings updated successfully."})
 
 
 # Get basic MT5 account info (balance, equity, profit)
@@ -1312,20 +1265,20 @@ def analyze_single_timeframe():
 
 # Run analysis across multiple timeframes based on trading style
 @app.route('/api/analyze_multi_timeframe', methods=['POST'])
-@mt5_required # Requires login and MT5 connection
+@mt5_required
 def analyze_multi_timeframe():
-    # This might be less used if single TF analysis is preferred, but keep for potential future use
     logging.debug(f"API: analyze_multi_timeframe called by user {current_user.id}")
     try:
         data = request.get_json()
-        style = data.get('trading_style', STATE.settings['trading_style']).upper() # Default to current setting
+        user_settings = get_user_settings(current_user)
+        style = data.get('trading_style', user_settings['trading_style']).upper()
         symbol = data.get('symbol')
         logging.info(f"API: Requesting multi-TF analysis for {symbol}, style {style}")
 
         if not symbol:
-             return jsonify({"error": "Symbol is required."}), 400
+            return jsonify({"error": "Symbol is required."}), 400
 
-        creds = STATE.settings.get('mt5_credentials') # Use credentials from state
+        creds = user_settings.get('mt5_credentials')
         analyses = _run_full_analysis(symbol, creds, style)
 
         if not analyses:
@@ -1396,10 +1349,11 @@ def handle_execute_trade():
         if params_for_exec['lot_size'] <= 0: raise ValueError("Lot size must be positive.")
         if params_for_exec['trade_type'] not in ['BUY', 'SELL']: raise ValueError("trade_type must be BUY or SELL.")
 
-        creds = STATE.settings.get('mt5_credentials') # Use stored credentials
-        result = _execute_trade_logic(creds, params_for_exec) # Execute the trade
+        user_settings = get_user_settings(current_user)
+        creds = user_settings.get('mt5_credentials')
+        result = _execute_trade_logic(creds, params_for_exec)
 
-        logging.info(f"API: Manual trade executed successfully. Order ID: {result.order}")
+        logging.info(f"API: Manual trade executed successfully for user {current_user.id}. Order ID: {result.order}")
         return jsonify({
             "message": "Trade executed successfully!",
             "details": { "order_id": result.order, "symbol": result.request.symbol, "type": params_for_exec['trade_type'], "volume": result.volume }
@@ -1738,6 +1692,7 @@ def handle_signin():
         return jsonify({"error": "Invalid email or password."}), 401 # Unauthorized
 
     login_user(user)
+    start_user_threads(user) # Start background threads for the user
     logging.info(f"API: User '{email}' logged in successfully.")
     return jsonify({
         "message": "Login successful!",
@@ -1753,7 +1708,9 @@ def handle_signin():
 @login_required # Ensure user is logged in to log out
 def handle_logout():
     user_email = current_user.email
+    user_id = current_user.id
     logout_user()
+    stop_user_threads(user_id) # Stop background threads for the user
     logging.info(f"API: User '{user_email}' logged out successfully.")
     session.clear()
     return jsonify({"message": "Logout successful."}), 200
@@ -1910,6 +1867,7 @@ def google_callback():
         # If user exists and google_id already matches, just log them in
 
         login_user(user) # This sets the session cookie for the domain the request came from (127.0.0.1)
+        start_user_threads(user) # Start background threads for the user
         logging.info(f"API: User '{email}' logged in via Google OAuth, redirecting to set token.")
         # Instead of redirecting to the frontend, redirect to our new token setter endpoint
         return redirect(url_for('set_token'))
@@ -1946,29 +1904,9 @@ def handle_unsubscribe(data):
 # --- Main Execution Block ---
 if __name__ == '__main__':
     init_db() # Create DB tables if they don't exist
-    STATE.load_settings() # Load settings from file and attempt initial MT5 connect
+    # STATE.load_settings() has been removed as settings are now loaded per-user.
 
-    # --- Start Background Threads ---
-    # 1. Trade Monitoring (Always runs if app is running)
-    if not STATE.monitoring_running:
-        STATE.monitoring_running = True
-        STATE.monitoring_thread = threading.Thread(target=trade_monitoring_loop, daemon=True)
-        STATE.monitoring_thread.start()
-        logging.info("Started trade monitoring thread.")
-
-    # 2. Auto-Trading (Starts only if enabled in settings AND MT5 connected)
-    if STATE.settings.get('auto_trading_enabled') and not STATE.autotrade_running:
-        if mt5_manager.is_initialized:
-            with STATE.lock:
-                if not STATE.autotrade_running: # Double check inside lock
-                    STATE.autotrade_running = True
-                    STATE.autotrade_thread = threading.Thread(target=trading_loop, daemon=True)
-                    STATE.autotrade_thread.start()
-                    logging.info("Auto-trading thread started based on loaded settings.")
-        else:
-            logging.warning("Auto-trading enabled in settings, but MT5 connection failed on startup. Auto-trade loop NOT started.")
-    elif STATE.settings.get('auto_trading_enabled') and STATE.autotrade_running:
-         logging.info("Auto-trading thread already running from a previous start.")
+    # --- Background threads are now started on user login, not on app startup ---
 
 
     # --- Run Flask App with SocketIO ---
