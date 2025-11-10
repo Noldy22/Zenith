@@ -14,6 +14,7 @@ const PositionTracker = ({ credentials }) => {
                 const response = await fetch(`http://${window.location.hostname}:5000/api/get_open_positions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify(credentials),
                 });
                 if (response.ok) {

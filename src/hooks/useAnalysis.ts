@@ -35,6 +35,7 @@ export const useAnalysis = () => {
         const response = await fetch(`${getBackendUrl()}/api/analyze_single_timeframe`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({
                 credentials,
                 symbol: activeSymbol,

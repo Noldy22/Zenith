@@ -55,6 +55,7 @@ const CandlestickChart = ({ credentials, symbol, timeframe }: Props) => {
                 const response = await fetch(`http://${window.location.hostname}:5000/api/get_chart_data`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ ...credentials, symbol, timeframe }),
                 });
                 if (response.ok) {

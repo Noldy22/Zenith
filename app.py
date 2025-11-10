@@ -87,8 +87,14 @@ if app.config['SECRET_KEY'] == 'default-unsafe-secret-key-please-change':
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///trades.db' # The DB file will now store users and trades
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Required for Flask-Login sessions to work across requests
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax' # Can be 'Strict' if frontend/backend are same domain
-app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') == 'production' # Use secure cookies only over HTTPS
+# For localhost development: Use 'Lax' (works with HTTP on same domain/different ports)
+# For production: Use 'Strict' or 'Lax' with HTTPS
+# Note: SameSite=None requires Secure=True (HTTPS), so it won't work on HTTP
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('FLASK_ENV') == 'production' # Only use Secure in production (HTTPS)
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent JavaScript access to cookies
+app.config['SESSION_COOKIE_PATH'] = '/'  # Cookie available for all paths
+# Don't set domain - let Flask set it automatically based on the request
 
 # --- Extensions Initialization ---
 # supports_credentials=True allows cookies (like the session cookie) to be sent from the frontend
@@ -102,6 +108,25 @@ login_manager.init_app(app)
 # For an API, we want it to return a 401 Unauthorized error instead.
 login_manager.login_view = None # Disable redirect
 login_manager.unauthorized_handler(lambda: (jsonify(error="Login required."), 401))
+
+# --- CORS Headers for Credentials ---
+@app.after_request
+def after_request(response):
+    """Ensure CORS headers are set correctly for credentials."""
+    origin = request.headers.get('Origin')
+    if origin in allowed_origins:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+
+    # Debug logging for cookie issues
+    if request.path.startswith('/api/auth/signin') and response.status_code == 200:
+        logging.info(f"Login response - Set-Cookie header present: {'Set-Cookie' in response.headers}")
+        logging.info(f"Login response - CORS Origin: {response.headers.get('Access-Control-Allow-Origin', 'NOT SET')}")
+        logging.info(f"Login response - CORS Credentials: {response.headers.get('Access-Control-Allow-Credentials', 'NOT SET')}")
+
+    return response
 
 # --- Google OAuth Configuration ---
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -353,10 +378,19 @@ def login_required_api(f):
     """Decorator to ensure the user is logged in via Flask-Login session."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Debug: Log cookies received
+        cookies_received = request.cookies
+        logging.info(f"Auth check for {request.path}")
+        logging.info(f"  - Cookies received: {list(cookies_received.keys())}")
+        logging.info(f"  - Session cookie present: {'session' in cookies_received}")
+        logging.info(f"  - User authenticated: {current_user.is_authenticated}")
+
         if not current_user.is_authenticated:
             logging.warning(f"Unauthorized access attempt to {request.path}")
+            logging.warning(f"  - No valid session. Session data: {dict(session)}")
             return jsonify({"error": "Authentication required."}), 401
-        logging.debug(f"User {current_user.id} authorized for {request.path}")
+
+        logging.info(f"User {current_user.id} authorized for {request.path}")
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1659,6 +1693,11 @@ def handle_signup():
 
         # --- Automatically log in after signup ---
         login_user(new_user)
+        # Explicitly modify session to ensure Set-Cookie header is sent
+        session.permanent = True
+        session.modified = True
+        session['user_id'] = new_user.id
+
         logging.info(f"API: User '{email}' automatically logged in after signup.")
         return jsonify({
             "message": "Signup successful!",
@@ -1692,8 +1731,15 @@ def handle_signin():
         return jsonify({"error": "Invalid email or password."}), 401 # Unauthorized
 
     login_user(user)
+    # Explicitly modify session to ensure Set-Cookie header is sent
+    session.permanent = True  # Make session persistent
+    session.modified = True   # Force Flask to send Set-Cookie header
+    session['user_id'] = user.id  # Store user ID in session for reference
+
     start_user_threads(user) # Start background threads for the user
-    logging.info(f"API: User '{email}' logged in successfully.")
+    logging.info(f"API: User '{email}' logged in successfully. Session ID: {session.get('_id', 'N/A')}")
+    logging.info(f"API: Session permanent: {session.permanent}, modified: {session.modified}")
+
     return jsonify({
         "message": "Login successful!",
         "user": {
@@ -1867,6 +1913,11 @@ def google_callback():
         # If user exists and google_id already matches, just log them in
 
         login_user(user) # This sets the session cookie for the domain the request came from (127.0.0.1)
+        # Explicitly modify session to ensure Set-Cookie header is sent
+        session.permanent = True
+        session.modified = True
+        session['user_id'] = user.id
+
         start_user_threads(user) # Start background threads for the user
         logging.info(f"API: User '{email}' logged in via Google OAuth, redirecting to set token.")
         # Instead of redirecting to the frontend, redirect to our new token setter endpoint

@@ -9,6 +9,7 @@ interface User {
   id: number;
   email: string;
   name: string;
+  is_google_account?: boolean;
 }
 
 interface AuthContextType {
@@ -18,6 +19,8 @@ interface AuthContextType {
   login: (email: string, pass: string) => Promise<boolean | string>;
   logout: () => Promise<void>;
   checkSession: () => Promise<void>;
+  setTokenAndUser: (token: string, userData: User) => void;
+  fetchUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -119,16 +122,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return true;
       } else {
         console.warn('[AuthContext] login - Failed:', data.error || 'Unknown error');
-        // setError(data.error || 'Login failed.'); // setError is not defined here, handle in component
+        setStatus('unauthenticated');
+        setUser(null);
         return data.error || 'Login failed.';
       }
     } catch (err) {
       console.error("[AuthContext] login - Request failed:", err);
+      setStatus('unauthenticated');
+      setUser(null);
       const errorMsg = 'An unexpected error occurred. Please try again.';
-      // setError(errorMsg); // setError is not defined here
       return errorMsg;
-    } finally {
-        // Removed setStatus('unauthenticated') from finally block for login
     }
   };
 
@@ -156,7 +159,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading: status === 'loading', status, login, logout, checkSession, setTokenAndUser }}>
+    <AuthContext.Provider value={{ user, isLoading: status === 'loading', status, login, logout, checkSession, setTokenAndUser, fetchUser: checkSession }}>
       {children}
     </AuthContext.Provider>
   );

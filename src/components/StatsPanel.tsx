@@ -37,6 +37,7 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ credentials }) => {
                 const response = await fetch(`${getBackendUrl()}/api/get_daily_stats`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify(credentials),
                 });
                 if (response.ok) {

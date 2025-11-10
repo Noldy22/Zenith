@@ -52,6 +52,7 @@ export default function Chat({ analysisContext }: ChatProps) {
       const response = await fetch(`http://${window.location.hostname}:5000/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           message: input,
           analysis_context: analysisContext,

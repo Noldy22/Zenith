@@ -2,13 +2,13 @@
 "use client";
 
 import { useState } from 'react';
-import { signIn } from 'next-auth/react'; // Use signIn for Google on signup too
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { getBackendUrl } from '@/lib/utils';
+import { useAuth } from '@/context/AuthContext';
 import Link from 'next/link';
 
 // Simple Google Icon SVG component
@@ -32,6 +32,7 @@ export default function SignUpPage() {
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
   const backendUrl = getBackendUrl();
+  const { login } = useAuth();
 
   const handleCredentialsSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,23 +50,20 @@ export default function SignUpPage() {
         method: "POST",
         body: JSON.stringify({ name, email, password }),
         headers: { "Content-Type": "application/json" },
+        credentials: 'include', // Important for cookies
       });
 
       const data = await res.json();
 
       if (res.ok) {
         // Automatically sign in the user after successful signup
-        const signInResult = await signIn('credentials', {
-          redirect: false,
-          email,
-          password,
-        });
+        const loginResult = await login(email, password);
 
-        if (signInResult?.ok) {
+        if (loginResult === true) {
           router.push('/dashboard'); // Redirect to dashboard
         } else {
           // Handle potential sign-in failure after signup (unlikely but possible)
-          setError(signInResult?.error || 'Signup successful, but auto sign-in failed. Please sign in manually.');
+          setError(loginResult as string || 'Signup successful, but auto sign-in failed. Please sign in manually.');
         }
       } else {
         setError(data.error || `Signup failed. Status: ${res.status}`);
@@ -78,11 +76,11 @@ export default function SignUpPage() {
     }
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = () => {
     setIsLoading(true);
     setError(null);
-    await signIn('google', { callbackUrl: '/dashboard' });
-    // setIsLoading(false); // Page redirects
+    // Redirect to our Flask backend's Google signup route
+    window.location.href = `${backendUrl}/api/auth/google/login`;
   };
 
 
