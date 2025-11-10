@@ -97,8 +97,8 @@ app.config['SESSION_COOKIE_PATH'] = '/'  # Cookie available for all paths
 # Don't set domain - let Flask set it automatically based on the request
 
 # --- Extensions Initialization ---
-# supports_credentials=True allows cookies (like the session cookie) to be sent from the frontend
-CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
+# DON'T use flask_cors - it conflicts with manual CORS headers
+# CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
@@ -110,6 +110,19 @@ login_manager.login_view = None # Disable redirect
 login_manager.unauthorized_handler(lambda: (jsonify(error="Login required."), 401))
 
 # --- CORS Headers for Credentials ---
+@app.before_request
+def handle_preflight():
+    """Handle OPTIONS preflight requests."""
+    if request.method == 'OPTIONS':
+        response = app.make_default_options_response()
+        origin = request.headers.get('Origin')
+        if origin in allowed_origins:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+
 @app.after_request
 def after_request(response):
     """Ensure CORS headers are set correctly for credentials."""
@@ -120,11 +133,13 @@ def after_request(response):
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
 
-    # Debug logging for cookie issues
+    # Debug logging - Check ALL headers being sent
     if request.path.startswith('/api/auth/signin') and response.status_code == 200:
-        logging.info(f"Login response - Set-Cookie header present: {'Set-Cookie' in response.headers}")
-        logging.info(f"Login response - CORS Origin: {response.headers.get('Access-Control-Allow-Origin', 'NOT SET')}")
-        logging.info(f"Login response - CORS Credentials: {response.headers.get('Access-Control-Allow-Credentials', 'NOT SET')}")
+        logging.info("=" * 60)
+        logging.info("ALL RESPONSE HEADERS:")
+        for header_name, header_value in response.headers:
+            logging.info(f"  {header_name}: {header_value[:200] if len(header_value) > 200 else header_value}")
+        logging.info("=" * 60)
 
     return response
 
@@ -1730,15 +1745,17 @@ def handle_signin():
         logging.warning(f"API: signin failed - invalid credentials for '{email}'.")
         return jsonify({"error": "Invalid email or password."}), 401 # Unauthorized
 
-    login_user(user)
+    login_user(user, remember=True)  # remember=True ensures the session is saved
     # Explicitly modify session to ensure Set-Cookie header is sent
     session.permanent = True  # Make session persistent
-    session.modified = True   # Force Flask to send Set-Cookie header
     session['user_id'] = user.id  # Store user ID in session for reference
+    # Force session to be marked as modified
+    session.modified = True
 
     start_user_threads(user) # Start background threads for the user
-    logging.info(f"API: User '{email}' logged in successfully. Session ID: {session.get('_id', 'N/A')}")
+    logging.info(f"API: User '{email}' logged in successfully.")
     logging.info(f"API: Session permanent: {session.permanent}, modified: {session.modified}")
+    logging.info(f"API: Session contents: {dict(session)}")
 
     return jsonify({
         "message": "Login successful!",
